@@ -4,7 +4,6 @@
   "description": "Renders a Claude Code session as a readable, narrated timeline in a local browser panel.",
   "author": { "name": "deva" },
   "keywords": ["observability", "timeline", "visualization"],
-  "hooks": "./hooks/hooks.json",
   "userConfig": {
     "port": {
       "type": "number",
