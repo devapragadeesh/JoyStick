@@ -9,6 +9,7 @@ import { Store } from "./db.js";
 import { Broker } from "./sse.js";
 import { startTailer, tailOnce } from "./transcript.js";
 import { CodeGraphScheduler, isEditTrigger } from "./codegraph-triggers.js";
+import { registerQaRoutes } from "./qa-routes.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -171,6 +172,8 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
     codeGraph.forceExtraction(repoRoot);
     return { triggered: true, repoRoot };
   });
+
+  registerQaRoutes(app, store);
 
   // The built panel, when present. In development the panel runs under Vite on
   // its own port and proxies here instead.

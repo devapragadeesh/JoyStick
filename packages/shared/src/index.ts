@@ -4,6 +4,7 @@ export * from "./attribution.js";
 export * from "./timeline.js";
 export * from "./sessionState.js";
 export * from "./codegraph.js";
+export * from "./qa.js";
 
 import type { ParentAttribution } from "./attribution.js";
 

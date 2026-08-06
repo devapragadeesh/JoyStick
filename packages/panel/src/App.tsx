@@ -2,11 +2,21 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Timeline } from "./Timeline.js";
 import { SessionPicker } from "./SessionPicker.js";
 import { CodeMap } from "./CodeMap.js";
+import { Chat } from "./Chat.js";
 import { useSessions, useSessionTimeline } from "./useSession.js";
+import { SelectionProvider } from "./selection.js";
 
-type Tab = "timeline" | "codemap";
+type Tab = "timeline" | "codemap" | "chat";
 
 export function App() {
+  return (
+    <SelectionProvider>
+      <AppInner />
+    </SelectionProvider>
+  );
+}
+
+function AppInner() {
   const { sessions, status } = useSessions();
   const [selected, setSelected] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -39,6 +49,9 @@ export function App() {
           <button className={tab === "codemap" ? "tab tab-active" : "tab"} onClick={() => setTab("codemap")}>
             Import graph
           </button>
+          <button className={tab === "chat" ? "tab tab-active" : "tab"} onClick={() => setTab("chat")}>
+            Ask
+          </button>
         </nav>
         {tab === "timeline" && <span className="muted">{stepCount} steps</span>}
       </header>
@@ -61,6 +74,8 @@ export function App() {
       )}
 
       {tab === "codemap" && <CodeMap />}
+
+      {tab === "chat" && <Chat sessionId={selected} />}
 
       {tab === "timeline" && !atLive && pendingCount > 0 && (
         <button className="jump" onClick={jumpToLive}>

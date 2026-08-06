@@ -12,6 +12,29 @@ import type {
 } from "@joystick/shared";
 
 export type CodeGraphMetaRow = CodeGraphMeta;
+
+export interface ProviderRow {
+  id: string;
+  kind: string;
+  label: string;
+  config: string; // JSON
+  is_default: 0 | 1;
+  last_verified_at: string | null;
+  last_verified_ok: 0 | 1 | null;
+  created_at: string;
+}
+
+export interface ChatMessageRow {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  text: string;
+  provider_id: string | null;
+  provider_label: string | null;
+  provider_kind: string | null;
+  context_files: string; // JSON
+  created_at: string;
+}
 import { config } from "./config.js";
 
 /**
@@ -143,6 +166,40 @@ CREATE TABLE IF NOT EXISTS code_edges (
 
 CREATE INDEX IF NOT EXISTS idx_code_edges_from ON code_edges (from_id);
 CREATE INDEX IF NOT EXISTS idx_code_edges_to   ON code_edges (to_id);
+
+-- Q&A: user-configured providers, chat history, and the claude-cli rate ledger.
+CREATE TABLE IF NOT EXISTS providers (
+  id                TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL,
+  label             TEXT NOT NULL,
+  config            TEXT NOT NULL,
+  is_default        INTEGER NOT NULL DEFAULT 0,
+  last_verified_at  TEXT,
+  last_verified_ok  INTEGER,
+  created_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  text            TEXT NOT NULL,
+  provider_id     TEXT,
+  provider_label  TEXT,
+  provider_kind   TEXT,
+  context_files   TEXT NOT NULL DEFAULT '[]',
+  created_at      TEXT NOT NULL
+);
+
+-- One row per claude-cli call. A rolling-hour count over this table survives
+-- a sidecar restart, unlike an in-memory counter would.
+CREATE TABLE IF NOT EXISTS claude_cli_calls (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  called_at_ms  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id, id);
+CREATE INDEX IF NOT EXISTS idx_claude_cli_calls_time ON claude_cli_calls (called_at_ms);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events (session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool_use_id ON events (tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_events_agent_id    ON events (agent_id);
@@ -725,6 +782,126 @@ export class Store {
       .prepare("SELECT file_path, content_hash FROM code_nodes WHERE content_hash IS NOT NULL")
       .all() as Array<{ file_path: string; content_hash: string }>;
     return new Map(rows.map((r) => [r.file_path, r.content_hash]));
+  }
+
+  // ---- Q&A: providers ----
+
+  upsertProvider(input: {
+    id: string;
+    kind: string;
+    label: string;
+    config: unknown;
+    isDefault: boolean;
+    lastVerifiedAt: string | null;
+    lastVerifiedOk: boolean | null;
+    createdAt: string;
+  }): void {
+    if (input.isDefault) {
+      this.db.exec("UPDATE providers SET is_default = 0");
+    }
+    this.db
+      .prepare(
+        `INSERT INTO providers (id, kind, label, config, is_default, last_verified_at, last_verified_ok, created_at)
+         VALUES (@id, @kind, @label, @config, @is_default, @last_verified_at, @last_verified_ok, @created_at)
+         ON CONFLICT(id) DO UPDATE SET
+           kind = excluded.kind, label = excluded.label, config = excluded.config,
+           is_default = excluded.is_default,
+           last_verified_at = excluded.last_verified_at, last_verified_ok = excluded.last_verified_ok`,
+      )
+      .run({
+        id: input.id,
+        kind: input.kind,
+        label: input.label,
+        config: JSON.stringify(input.config),
+        is_default: input.isDefault ? 1 : 0,
+        last_verified_at: input.lastVerifiedAt,
+        last_verified_ok: input.lastVerifiedOk === null ? null : input.lastVerifiedOk ? 1 : 0,
+        created_at: input.createdAt,
+      });
+  }
+
+  setProviderVerification(id: string, ok: boolean, at: string): void {
+    this.db
+      .prepare("UPDATE providers SET last_verified_at = ?, last_verified_ok = ? WHERE id = ?")
+      .run(at, ok ? 1 : 0, id);
+  }
+
+  setDefaultProvider(id: string): void {
+    const tx = this.db.transaction(() => {
+      this.db.exec("UPDATE providers SET is_default = 0");
+      this.db.prepare("UPDATE providers SET is_default = 1 WHERE id = ?").run(id);
+    });
+    tx();
+  }
+
+  deleteProvider(id: string): void {
+    this.db.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  }
+
+  providers(): ProviderRow[] {
+    return this.db.prepare("SELECT * FROM providers ORDER BY created_at").all() as ProviderRow[];
+  }
+
+  provider(id: string): ProviderRow | null {
+    return (this.db.prepare("SELECT * FROM providers WHERE id = ?").get(id) as ProviderRow | undefined) ?? null;
+  }
+
+  // ---- Q&A: chat ----
+
+  insertChatMessage(input: {
+    sessionId: string;
+    role: "user" | "assistant";
+    text: string;
+    providerId: string | null;
+    providerLabel: string | null;
+    providerKind: string | null;
+    contextFiles: string[];
+    createdAt: string;
+  }): number {
+    const info = this.db
+      .prepare(
+        `INSERT INTO chat_messages (session_id, role, text, provider_id, provider_label, provider_kind, context_files, created_at)
+         VALUES (@session_id, @role, @text, @provider_id, @provider_label, @provider_kind, @context_files, @created_at)`,
+      )
+      .run({
+        session_id: input.sessionId,
+        role: input.role,
+        text: input.text,
+        provider_id: input.providerId,
+        provider_label: input.providerLabel,
+        provider_kind: input.providerKind,
+        context_files: JSON.stringify(input.contextFiles),
+        created_at: input.createdAt,
+      });
+    return Number(info.lastInsertRowid);
+  }
+
+  chatMessages(sessionId: string): ChatMessageRow[] {
+    return this.db
+      .prepare("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as ChatMessageRow[];
+  }
+
+  // ---- Q&A: claude-cli rate limiting ----
+
+  recordClaudeCliCall(atMs: number): void {
+    this.db.prepare("INSERT INTO claude_cli_calls (called_at_ms) VALUES (?)").run(atMs);
+  }
+
+  /** Count of claude-cli calls in the rolling window ending at `nowMs`. */
+  claudeCliCallsInWindow(nowMs: number, windowMs: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM claude_cli_calls WHERE called_at_ms > ?")
+      .get(nowMs - windowMs) as { n: number };
+    return row.n;
+  }
+
+  /** Oldest call still inside the window — its age determines when the limit resets. */
+  oldestClaudeCliCallInWindow(nowMs: number, windowMs: number): number | null {
+    const row = this.db
+      .prepare("SELECT MIN(called_at_ms) AS t FROM claude_cli_calls WHERE called_at_ms > ?")
+      .get(nowMs - windowMs) as { t: number | null };
+    return row.t;
   }
 
   close(): void {

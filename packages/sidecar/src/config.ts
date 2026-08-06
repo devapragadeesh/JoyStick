@@ -40,4 +40,13 @@ export const config = {
 
   /** Cap on a single stored payload, guarding against a runaway tool_result. */
   maxPayloadBytes: num(process.env.JOYSTICK_MAX_PAYLOAD, 8 * 1024 * 1024),
+
+  /**
+   * B.5's claude-cli guardrail: N calls per rolling hour, server-side,
+   * backed by the claude_cli_calls ledger so it survives a sidecar restart
+   * within the window. Only claude-cli is limited — ollama and
+   * openai-compatible are unaffected by this value.
+   */
+  claudeCliRateLimitPerHour: num(process.env.JOYSTICK_CLAUDE_CLI_RATE_LIMIT, 20),
+  claudeCliRateLimitWindowMs: 60 * 60 * 1000,
 };
