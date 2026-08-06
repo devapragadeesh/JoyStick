@@ -23,11 +23,22 @@ import type { EventRow } from "./index.js";
  * than a guessed one.
  */
 
+/**
+ * Whether a subagent's parent could be established.
+ *
+ * "unattributed" is a real, reportable state, not a missing value. It is what
+ * makes the FIFO-adjacency assumption falsifiable: the rate is tracked per
+ * session so that if Claude Code ever changes the ordering this relies on, it
+ * shows up as a rising count before it shows up as a wrong tree.
+ */
+export type ParentAttribution = "linked" | "unattributed";
+
 export interface AgentLink {
   agent_id: string;
   agent_type: string | null;
   /** tool_use_id of the spawning Agent call, or null when it can't be determined. */
   parent_tool_use_id: string | null;
+  parent_attribution: ParentAttribution;
   start_seq: number;
   stop_seq: number | null;
 }
@@ -46,12 +57,14 @@ export function linkSubagents(events: EventRow[]): Map<string, AgentLink> {
     }
 
     if (e.hook_event_name === "SubagentStart" && e.agent_id) {
+      // Oldest unclaimed spawn: starts arrive in the order the Agent calls were
+      // made, so FIFO is the correct pairing.
+      const parent = pendingSpawns.shift() ?? null;
       links.set(e.agent_id, {
         agent_id: e.agent_id,
         agent_type: e.agent_type,
-        // Oldest unclaimed spawn: starts arrive in the order the Agent calls
-        // were made, so FIFO is the correct pairing.
-        parent_tool_use_id: pendingSpawns.shift() ?? null,
+        parent_tool_use_id: parent,
+        parent_attribution: parent === null ? "unattributed" : "linked",
         start_seq: e.seq,
         stop_seq: null,
       });

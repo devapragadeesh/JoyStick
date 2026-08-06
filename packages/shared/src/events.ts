@@ -62,18 +62,61 @@ const toolFields = {
 };
 
 /**
- * One entry of PostToolBatch's `tool_calls`. Note the per-call result field is
- * `output`, not `tool_result` — PostToolBatch is the one event that names it
- * differently.
+ * Where a tool's result actually lives.
+ *
+ * ⚠ The docs are wrong about this, for both events that carry a result.
+ *
+ *   | event          | docs say      | Claude Code 2.1.220 sends |
+ *   | PostToolUse    | tool_result   | tool_response  (51/51)    |
+ *   | PostToolBatch  | output        | tool_response  (51/51)    |
+ *
+ * Measured against every result-bearing payload captured during Phase 0
+ * verification. Neither documented name appeared even once.
+ *
+ * The useful consequence is the opposite of what the docs imply: the two events
+ * are *not* inconsistent with each other. They both use `tool_response`, so
+ * transcript-join code can read one field for both.
+ *
+ * All three names are kept optional on the schema so a version that does emit a
+ * documented name still parses, and `toolResponseOf` resolves whichever is
+ * present. Read results through that helper, never by reaching for a field
+ * directly — that is the mistake this comment exists to prevent.
  */
+export const RESULT_FIELD_NAMES = ["tool_response", "output", "tool_result"] as const;
+
+/** One entry of PostToolBatch's `tool_calls`. */
+export interface BatchToolCall {
+  tool_name?: string;
+  tool_use_id?: string;
+  tool_input?: unknown;
+  /** Observed field. See RESULT_FIELD_NAMES. */
+  tool_response?: unknown;
+  /** Documented but never observed. Retained as a fallback only. */
+  output?: unknown;
+}
+
 export const BatchToolCallSchema = z
   .object({
     tool_name: z.string().optional(),
     tool_use_id: z.string().optional(),
     tool_input: z.unknown().optional(),
+    tool_response: z.unknown().optional(),
     output: z.unknown().optional(),
   })
   .passthrough();
+
+/**
+ * Resolve a tool result regardless of which field name carries it. Accepts a
+ * PostToolUse payload or a single PostToolBatch tool_calls entry.
+ */
+export function toolResponseOf(source: unknown): unknown {
+  if (typeof source !== "object" || source === null) return undefined;
+  const rec = source as Record<string, unknown>;
+  for (const name of RESULT_FIELD_NAMES) {
+    if (rec[name] !== undefined) return rec[name];
+  }
+  return undefined;
+}
 
 export const SessionStartSchema = z
   .object({
@@ -104,6 +147,9 @@ export const PostToolUseSchema = z
     ...commonFields,
     ...toolFields,
     hook_event_name: z.literal("PostToolUse"),
+    // See RESULT_FIELD_NAMES: the observed field is tool_response, not the
+    // documented tool_result. Both parse; read via toolResponseOf.
+    tool_response: z.unknown().optional(),
     tool_result: z.unknown().optional(),
   })
   .passthrough();

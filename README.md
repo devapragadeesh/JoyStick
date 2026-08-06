@@ -217,15 +217,117 @@ independent derivations.
 
 **Pass**, with the caveat that the parent link is inferred. See above.
 
+---
+
+## Phase 0 closeout
+
+Three changes folded in after review, plus one correction the review surfaced.
+
+### The docs are wrong about where tool results live
+
+Preparing the "`PostToolBatch` uses `output`" type, the real captures disagreed with the docs
+for **both** result-bearing events:
+
+| event | docs say | Claude Code 2.1.220 sends |
+| --- | --- | --- |
+| `PostToolUse` | `tool_result` | **`tool_response`** — 51/51 payloads |
+| `PostToolBatch` | `output` | **`tool_response`** — 51/51 `tool_calls` entries |
+
+Neither documented name appeared even once. The useful consequence is the inverse of the
+review's premise: the two events are **not** inconsistent with each other — they agree, and
+the docs are wrong about both. Transcript-join code can read one field for both.
+
+`RESULT_FIELD_NAMES` and `toolResponseOf()` in `packages/shared/src/events.ts` resolve
+whichever name is present, observed-first. All three parse, so a version that emits a
+documented name still works. `resultField.typecheck.ts` is a compile-time guard.
+
+This was latent rather than harmful in Phase 0 — the raw payload is stored verbatim and the
+summariser only reads `tool_name` — but it would have silently broken Phase 1's join.
+
+### Attribution and liveness are now queryable
+
+`events` gained `parent_tool_use_id` and `parent_attribution` (`"linked"` / `"unattributed"`),
+resolved **at write time**. Resolution reads pending spawns from SQLite rather than memory, so
+a sidecar restart mid-session does not orphan agents that were correctly linkable. Events
+outside a subagent get `NULL` — Phase 0 does not invent Phase 1's `"root"`.
+
+`sessions` gained `last_event_at`, `last_event_at_ms`, `stop_received`, `session_end_received`,
+and `last_end_kind`. `Stop` is stored separately from `SessionEnd` because it ends a *turn*,
+not a session.
+
+Two views, plus `/api/attribution` and `/api/liveness`:
+
+```sql
+SELECT * FROM session_subagent_attribution;  -- total / unattributed / pct, per session
+SELECT * FROM session_liveness;              -- last_event_at, explicit_end_received, …
+```
+
+Neither computes an "ended" verdict. That needs an idle threshold and belongs to the panel.
+
+### Closeout verification
+
+**1. Real capture stays fully linked.** ✅ Replaying the three-subagent capture:
+
+```
+session_id                            total  unattributed  pct
+6bf72ce5-9bbc-412d-b4a9-46406ec19a1f  27     0             0.0
+unattributed-0001                     5      5             100.0
+
+agent   attribution   parent  events
+133578  linked        ognJPR  10
+95511c  linked        Sjshjg  12
+b267c9  linked        uTpZsE  5
+orphan  unattributed  —       5
+```
+
+Parent links match the Phase 0 ground truth exactly. **Observed unattributed rate on real
+data: 0%** — evidence the FIFO-adjacency assumption holds.
+
+**2. Forced null branch.** ✅ `fixtures/unattributed-subagent.jsonl` has a `SubagentStart` with
+no spawning `Agent` call, preceded by an unrelated `Read`. All five subagent events come back
+`unattributed` with a null parent — the `Read`'s `tool_use_id` is never borrowed:
+
+```
+seq  event             tool  attribution   parent
+3    PreToolUse        Read  (none: root)  (null)
+5    SubagentStart     -     unattributed  (null)
+6    PreToolUse        Glob  unattributed  (null)
+9    SubagentStop      -     unattributed  (null)
+```
+
+**3. Type-level guard.** ✅ Renaming `tool_response` → `tool_result` fails the build in both
+directions:
+
+```
+error TS2339: Property 'tool_response' does not exist on type 'BatchToolCall'.
+error TS2578: Unused '@ts-expect-error' directive.
+```
+
+The second is the important one: it means deleting a guard line cannot silently pass.
+
+**4. Truncated session.** ✅ Sidecar killed 11s in; session exited 0. Facts captured:
+
+```
+        last_event_at = 2026-08-06T08:56:46.320Z
+        stop_received = 0
+ session_end_received = 0
+explicit_end_received = 0
+        last_end_kind =
+          event_count = 17
+```
+
+`last_event_at` populated, `explicit_end_received` false, no verdict computed.
+
 ### Tests
 
-25 tests, all passing. The attribution suite runs against the real parallel-subagent capture rather
-than a synthetic fixture — synthetic data would not have exercised the interleaving.
+40 tests, all passing. The attribution suites run against the real parallel-subagent capture
+rather than a synthetic fixture — synthetic data would not have exercised the interleaving.
 
 ```
 ✓ packages/shared/src/summary.test.ts      (8)
 ✓ packages/shared/src/attribution.test.ts  (7)
 ✓ packages/sidecar/src/server.test.ts     (10)
+✓ packages/sidecar/src/closeout.test.ts   (15)
 ```
 
 ---
@@ -237,7 +339,7 @@ than a synthetic fixture — synthetic data would not have exercised the interle
 - **Parent attribution is inference.** If Claude Code ever changes the ordering of `SubagentStart`
   relative to the spawning `Agent` call, `linkSubagents()` breaks. It is isolated and tested against
   a real capture for exactly this reason.
-- **`PostToolBatch` names its result field `output`**, not `tool_result` as every other tool event
-  does. Handled, but easy to trip over.
+- **Tool results live in `tool_response`, which no documentation mentions.** Read them through
+  `toolResponseOf()`, never by reaching for a field name directly.
 - **Events arriving before their session's `SessionStart`** are handled by upserting a session row
   from whatever event arrives first, since the sidecar may start mid-session.

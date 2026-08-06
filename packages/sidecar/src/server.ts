@@ -65,6 +65,11 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
     });
 
     trackSession(store, payload, receivedAtMs);
+    store.touchSession({
+      session_id: payload.session_id,
+      hook_event_name: payload.hook_event_name,
+      received_at_ms: receivedAtMs,
+    });
 
     reply.code(204).send();
 
@@ -98,6 +103,25 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
   });
 
   app.get("/api/sessions", async () => store.sessions());
+
+  /**
+   * Raw liveness facts. Deliberately does not say whether a session ended —
+   * that verdict needs an idle threshold and belongs to the consumer.
+   */
+  app.get("/api/liveness", async (request) => {
+    const q = request.query as { session_id?: string };
+    return store.liveness(q.session_id);
+  });
+
+  /**
+   * Running check on the FIFO-adjacency assumption behind subagent attribution.
+   * A consistently zero unattributed rate is evidence the undocumented ordering
+   * holds; a rising one is the early warning that it changed upstream.
+   */
+  app.get("/api/attribution", async (request) => {
+    const q = request.query as { session_id?: string };
+    return store.attributionStats(q.session_id);
+  });
 
   // The built panel, when present. In development the panel runs under Vite on
   // its own port and proxies here instead.
