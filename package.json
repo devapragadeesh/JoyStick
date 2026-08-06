@@ -10,7 +10,11 @@
     "start": "pnpm --filter @joystick/sidecar start",
     "test": "vitest run",
     "replay": "tsx scripts/replay.ts",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "verify": "tsx scripts/verify.ts"
+  },
+  "dependencies": {
+    "@joystick/shared": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.2",

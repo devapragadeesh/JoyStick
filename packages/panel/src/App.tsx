@@ -1,90 +1,102 @@
-import { useMemo, useState } from "react";
-import type { EventRow } from "@joystick/shared";
-import { useEventStream } from "./useEventStream.js";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Timeline } from "./Timeline.js";
+import { SessionPicker } from "./SessionPicker.js";
+import { useSessions, useSessionTimeline } from "./useSession.js";
 
-/**
- * Phase 0 panel: a reverse-chronological list of everything that happened.
- *
- * Every value below arrives from a hook payload and is therefore untrusted. It
- * reaches the DOM only as a React text child, never as HTML.
- */
 export function App() {
-  const { events, status } = useEventStream();
-  const [session, setSession] = useState<string>("all");
+  const { sessions, status } = useSessions();
+  const [selected, setSelected] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  const sessions = useMemo(() => {
-    const ids = new Set(events.map((e) => e.session_id));
-    return [...ids];
-  }, [events]);
+  // Session state depends on elapsed time, not only on new events, so the clock
+  // has to advance independently of the data.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
 
-  const visible = useMemo(
-    () => (session === "all" ? events : events.filter((e) => e.session_id === session)),
-    [events, session],
-  );
+  // Default to the most recent session once one exists.
+  useEffect(() => {
+    if (selected === null && sessions.length > 0) setSelected(sessions[0].session_id);
+  }, [sessions, selected]);
+
+  const { turns, stepCount, loading } = useSessionTimeline(selected);
+  const { scrollRef, pendingCount, atLive, jumpToLive } = useLiveScroll(stepCount);
 
   return (
     <div className="app">
       <header>
         <h1>joystick</h1>
         <span className={`status status-${status}`}>{status}</span>
-        <span className="count">{visible.length} events</span>
-        {sessions.length > 1 && (
-          <select value={session} onChange={(e) => setSession(e.target.value)}>
-            <option value="all">all sessions</option>
-            {sessions.map((id) => (
-              <option key={id} value={id}>
-                {id.slice(0, 8)}
-              </option>
-            ))}
-          </select>
-        )}
+        <span className="muted">{stepCount} steps</span>
       </header>
 
-      {visible.length === 0 && (
-        <p className="empty">
-          {status === "offline"
-            ? "Sidecar unreachable. Retrying."
-            : "Waiting for events. Run a Claude Code session, or `pnpm replay`."}
-        </p>
-      )}
+      <div className="layout">
+        <SessionPicker
+          sessions={sessions}
+          selected={selected}
+          onSelect={setSelected}
+          now={now}
+        />
 
-      <ol className="events">
-        {visible.map((e) => (
-          <EventItem key={e.id} event={e} />
-        ))}
-      </ol>
+        <main ref={scrollRef}>
+          {loading && <p className="muted">Loading…</p>}
+          {!loading && selected === null && <p className="empty">Select a session.</p>}
+          {!loading && selected !== null && <Timeline turns={turns} />}
+        </main>
+      </div>
+
+      {!atLive && pendingCount > 0 && (
+        <button className="jump" onClick={jumpToLive}>
+          {pendingCount} new step{pendingCount === 1 ? "" : "s"} · jump to live
+        </button>
+      )}
     </div>
   );
 }
 
-function EventItem({ event }: { event: EventRow }) {
-  const [open, setOpen] = useState(false);
-  const time = new Date(event.received_at).toLocaleTimeString(undefined, {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+/**
+ * Auto-scroll that yields to the user.
+ *
+ * Following the newest step is only helpful while the user is watching the
+ * newest step. The moment they scroll up to read something, continuing to yank
+ * the viewport would make the panel unusable — so auto-scroll switches off and
+ * new steps are announced instead.
+ */
+function useLiveScroll(stepCount: number) {
+  const scrollRef = useRef<HTMLElement | null>(null);
+  const [atLive, setAtLive] = useState(true);
+  const [seenCount, setSeenCount] = useState(stepCount);
 
-  return (
-    <li className={`event event-${kind(event.hook_event_name)}`}>
-      <button className="row" onClick={() => setOpen((o) => !o)}>
-        <span className="time">{time}</span>
-        <span className="seq">#{event.seq}</span>
-        <span className="name">{event.hook_event_name}</span>
-        {event.agent_type && <span className="agent">{event.agent_type}</span>}
-        <span className="summary">{event.summary}</span>
-      </button>
-      {open && <pre className="raw">{JSON.stringify(event.raw, null, 2)}</pre>}
-    </li>
-  );
-}
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distanceFromTop = el.scrollTop;
+      // Newest turn renders first, so "live" is the top of the list.
+      setAtLive(distanceFromTop < 40);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
-function kind(name: string): string {
-  if (name.startsWith("Subagent")) return "agent";
-  if (name.endsWith("Failure")) return "fail";
-  if (name.startsWith("Session")) return "session";
-  if (name.startsWith("Task")) return "task";
-  if (name === "UserPromptSubmit" || name === "Stop") return "turn";
-  return "tool";
+  useLayoutEffect(() => {
+    if (atLive) {
+      scrollRef.current?.scrollTo({ top: 0 });
+      setSeenCount(stepCount);
+    }
+  }, [stepCount, atLive]);
+
+  const jumpToLive = () => {
+    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    setAtLive(true);
+    setSeenCount(stepCount);
+  };
+
+  return {
+    scrollRef,
+    atLive,
+    pendingCount: Math.max(0, stepCount - seenCount),
+    jumpToLive,
+  };
 }

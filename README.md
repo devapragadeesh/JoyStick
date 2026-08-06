@@ -5,7 +5,7 @@ Renders a Claude Code session as a readable, teachable timeline in a local brows
 The plugin has no UI inside the Claude Code TUI. All UI is a local web app served by a sidecar
 process on `127.0.0.1`. Claude Code talks to the sidecar through hooks.
 
-**Status: Phase 0 complete** — the event spine. Phase 1 (narrated timeline) has not started.
+**Status: Phase 1 complete** — event spine plus a narrated, transcript-ordered timeline.
 
 ---
 
@@ -332,6 +332,138 @@ rather than a synthetic fixture — synthetic data would not have exercised the 
 
 ---
 
+---
+
+## Phase 1 — narrated timeline
+
+Three spec premises did not survive contact with real transcripts. All were confirmed
+against a 1.8 MB interactive session (180 tool calls) as well as the `-p` captures.
+
+### What the transcript actually looks like
+
+**`text` and `tool_use` never share a message.** 0 of 180. Claude Code writes every content
+block as its own record; assistant shapes are only ever `tool_use` (180), `text` (67), or
+`thinking` (54). So "the text immediately preceding the tool call" cannot mean the preceding
+*block* — it means the preceding assistant *record*, reached through `parentUuid`. That is
+what `resolveIntent` walks.
+
+**Intent coverage is structural, and thinner than the spec assumes.** Only the first tool
+call of a run tends to follow prose; later ones follow a `tool_result` record and have no
+preceding reasoning at all.
+
+| session | tool calls | text parent | thinking parent | combined |
+| --- | --- | --- | --- | --- |
+| `-p` scratch runs | 2–6 | ~1 each | 0 | 16–50% |
+| real interactive | 180 | 63 (35%) | 17 (9%) | **44%** |
+| prompted to explain each step | 6 | 5 | 0 | **83%** |
+
+`thinking` blocks are verbatim transcript content, so counting them is compliant with the
+never-generate constraint and lifts coverage meaningfully. `intentSource` records which of
+the two a step used, and the UI labels them differently. Everything else shows the explicit
+"no stated reasoning" marker.
+
+**Subagent work has no transcript representation.** `isSidechain: true` appears 0 times. A
+transcript contains the `Agent` tool_use but none of the subagent's internal calls, which
+exist only as hook events. Two consequences: subagent steps can never carry an intent, and
+they have no transcript position to sort by. `displayOrder` therefore packs two levels into
+one integer — `transcriptPos * 1e6 + seq` — anchoring nested steps to their parent's
+position and using `seq` only inside the one region where no transcript data can exist. A
+subagent's returned summary is still available, from the `Agent` tool result.
+
+### Architecture
+
+`buildTimeline()` in `packages/shared` is pure and runs in both the sidecar and the panel.
+Live rendering and replay call it identically — replay is the same view over historical rows,
+fed once instead of over SSE, which makes parity a property of the design rather than
+something to hope for.
+
+The tailer reads each transcript from a persisted byte offset, never re-reading from the
+start. A partial trailing line is left unconsumed until the next poll, and a file that shrank
+resets to zero. Steps render from their hook payload immediately and gain intent and true
+position whenever the transcript catches up; until then `displayOrderProvisional` parks them
+at the end.
+
+### Phase 1 verification
+
+**1. Ordering correctness.** ✅ The parallel-subagent capture, with its documented `seq`
+inversion, renders in transcript order:
+
+```
+    seq   displayOrder   tPos  tool   target
+      3        7000000      7  Agent  Find all JS files
+      5        8000000      8  Agent  Summarize package.json
+      7        9000000      9  Agent  List git history
+
+  arrival sequence around the inversion:
+    … 33:PostToolUse  35:PostToolBatch  36:PostToolUse
+```
+
+`seq` 35 (the batch summary) arrives before `seq` 36 (its own member's result); display order
+is unaffected because it derives from transcript position.
+
+**2. Intent integrity.** ✅ Automated, in `timeline.test.ts`: every non-null `intent` for a
+captured session must appear verbatim as a substring of that session's transcript file,
+compared in JSON-encoded form so no unescaping or reformatting can slip through.
+
+**3. Null-intent handling.** ✅ Real null steps occur in every capture (10 of 11 in the
+subagent session; 1 of 6 in the prompted one). The UI renders `no stated reasoning` in dimmed
+italics with a dashed rule — never blank space, which would read as a loading state.
+
+**4. Unattributed subagent steps.** ✅ Rendered in a dashed amber group headed "unattributed
+subagent steps · parent could not be determined", inside their turn but never merged into the
+root list. Tests assert they are neither dropped from the step count nor given a guessed
+parent.
+
+**5. Transcript lag / late insertion.** ✅ Demonstrated live with `JOYSTICK_NO_TAIL=1`:
+
+```
+BEFORE (transcript unread)          AFTER (tailer caught up)
+displayOrder=1000000000000003       displayOrder=7000000   intent="I'll spawn all three…"
+displayOrder=1000000000000005       displayOrder=8000000   intent=null
+displayOrder=1000000000000007       displayOrder=9000000   intent=null
+provisional=true                    provisional=false
+```
+
+Steps park at the end while their position is unknown and move *earlier* on backfill. An
+early version parked them at position 1 instead, so backfilling pushed them later — caught by
+the verification test, not by inspection.
+
+**6. Turn grouping.** ✅ Bounded by `UserPromptSubmit` → `Stop`. A killed session's
+unterminated turn renders as in progress with its unresolved call marked in flight, rather
+than erroring. **The panel caught a bug the tests missed**: with no `Stop` between turns, an
+open turn's bound ran to infinity and swallowed every later turn's steps. A new prompt now
+closes the previous turn, and only the newest turn can be in progress. Regression test added.
+
+**7. Session state badges.** ✅ One real session per state, no mocked data — the "Likely
+ended" case is the genuinely killed session from Phase 0 closeout:
+
+```
+  live-now     end=0  idle=      1s  thr=300s  -> live
+  fixture-00   end=1  idle=      1s  thr=300s  -> ended
+  a87fa6f6-7   end=0  idle=   7381s  thr=300s  -> likely-ended
+```
+
+Green solid, grey, and amber dashed respectively.
+
+**8. Replay parity.** ✅ Snapshotted the rendered DOM of a live session, did a full page
+reload, re-selected, and re-snapshotted: **byte-identical, 2052 chars both**.
+
+**9. `toolResponseOf()` coverage.** ✅ Every `PostToolUse` and every `PostToolBatch`
+`tool_calls` entry in a real capture resolves to a defined value, and all 11 resolved steps
+carry non-empty output. This is the standing regression test for the field-name bug.
+
+### Phase 1 tests
+
+65 tests. The intent-integrity, ordering, and coverage suites run against real captures.
+
+```
+✓ packages/shared/src/summary.test.ts      (8)
+✓ packages/shared/src/attribution.test.ts  (7)
+✓ packages/sidecar/src/server.test.ts     (10)
+✓ packages/sidecar/src/closeout.test.ts   (15)
+✓ packages/sidecar/src/timeline.test.ts   (25)
+```
+
 ## Known gaps
 
 - **`SessionEnd` is not guaranteed.** It fired in some `claude -p` runs and not others. `SessionEnd`
@@ -343,3 +475,7 @@ rather than a synthetic fixture — synthetic data would not have exercised the 
   `toolResponseOf()`, never by reaching for a field name directly.
 - **Events arriving before their session's `SessionStart`** are handled by upserting a session row
   from whatever event arrives first, since the sidecar may start mid-session.
+- **Most steps have no stated reasoning.** Around 56% of steps in a normal interactive session,
+  more in `-p` runs. This is a property of how transcripts are written, not of the extractor.
+  Prompting Claude to explain each step raises it to ~83%.
+- **Subagent steps can never have an intent**, since subagent work never reaches the transcript.

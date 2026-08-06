@@ -7,12 +7,15 @@ import { classify, summarize, type Envelope } from "@joystick/shared";
 import { config } from "./config.js";
 import { Store } from "./db.js";
 import { Broker } from "./sse.js";
+import { startTailer, tailOnce } from "./transcript.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 export interface BuildOptions {
   store?: Store;
   logger?: boolean;
+  /** Disabled in tests, which drive the tailer explicitly for determinism. */
+  tail?: boolean;
 }
 
 export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
@@ -102,7 +105,19 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
     return store.recentEvents(limit, q.session_id);
   });
 
-  app.get("/api/sessions", async () => store.sessions());
+  app.get("/api/sessions", async () => store.sessionSummaries());
+
+  /**
+   * Transcript-derived intent and position. Separate from /api/events because
+   * it lags: a step renders from its hook payload first and gains these later.
+   */
+  app.get("/api/intents", async (request) => {
+    const q = request.query as { session_id?: string };
+    return q.session_id ? store.toolIntents(q.session_id) : [];
+  });
+
+  /** Force a tailer pass. Used by tests and by the panel on demand. */
+  app.post("/api/tail", async () => ({ tailed: tailOnce(store) }));
 
   /**
    * Raw liveness facts. Deliberately does not say whether a session ended —
@@ -132,8 +147,12 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
 
   const heartbeat = setInterval(() => broker.heartbeat(), 25_000);
   heartbeat.unref();
+
+  const tailer = opts.tail === false ? null : startTailer(store);
+
   app.addHook("onClose", async () => {
     clearInterval(heartbeat);
+    tailer?.stop();
     broker.closeAll();
   });
 

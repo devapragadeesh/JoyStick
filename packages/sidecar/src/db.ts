@@ -64,6 +64,40 @@ CREATE TABLE IF NOT EXISTS events (
   raw                TEXT NOT NULL
 );
 
+-- Phase 1: transcript-derived state. Kept in its own tables because it is
+-- backfilled asynchronously and may lag arbitrarily behind the hook log.
+CREATE TABLE IF NOT EXISTS transcript_offsets (
+  transcript_path TEXT PRIMARY KEY,
+  session_id      TEXT NOT NULL,
+  byte_offset     INTEGER NOT NULL DEFAULT 0,
+  line_index      INTEGER NOT NULL DEFAULT 0,
+  updated_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS transcript_entries (
+  transcript_path TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  uuid            TEXT NOT NULL,
+  parent_uuid     TEXT,
+  line_index      INTEGER NOT NULL,
+  kind            TEXT NOT NULL,
+  tool_use_id     TEXT,
+  tool_name       TEXT,
+  text            TEXT,
+  PRIMARY KEY (transcript_path, uuid, kind, line_index)
+);
+
+CREATE TABLE IF NOT EXISTS tool_intents (
+  session_id     TEXT NOT NULL,
+  tool_use_id    TEXT NOT NULL,
+  transcript_pos INTEGER NOT NULL,
+  intent         TEXT,
+  intent_source  TEXT,
+  PRIMARY KEY (session_id, tool_use_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcript_uuid ON transcript_entries (transcript_path, uuid);
+CREATE INDEX IF NOT EXISTS idx_tool_intents_session ON tool_intents (session_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events (session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool_use_id ON events (tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_events_agent_id    ON events (agent_id);
@@ -333,6 +367,181 @@ export class Store {
       : "SELECT * FROM session_subagent_attribution";
     const args = session_id ? [session_id] : [];
     return this.db.prepare(sql).all(...args) as never;
+  }
+
+  // ---- Phase 1: transcript state ----
+
+  /** Sessions with a known transcript, newest first — what the tailer polls. */
+  transcriptTargets(): Array<{ session_id: string; transcript_path: string }> {
+    return this.db
+      .prepare(
+        `SELECT session_id, transcript_path FROM sessions
+         WHERE transcript_path IS NOT NULL
+         ORDER BY COALESCE(last_event_at_ms, 0) DESC
+         LIMIT 50`,
+      )
+      .all() as Array<{ session_id: string; transcript_path: string }>;
+  }
+
+  transcriptOffset(path: string): { byte_offset: number; line_index: number } {
+    const row = this.db
+      .prepare("SELECT byte_offset, line_index FROM transcript_offsets WHERE transcript_path = ?")
+      .get(path) as { byte_offset: number; line_index: number } | undefined;
+    return row ?? { byte_offset: 0, line_index: 0 };
+  }
+
+  setTranscriptOffset(path: string, sessionId: string, byteOffset: number, lineIndex: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO transcript_offsets (transcript_path, session_id, byte_offset, line_index, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(transcript_path) DO UPDATE SET
+           byte_offset = excluded.byte_offset,
+           line_index  = excluded.line_index,
+           updated_at  = excluded.updated_at`,
+      )
+      .run(path, sessionId, byteOffset, lineIndex, new Date().toISOString());
+  }
+
+  /** Drop derived state for a transcript that was truncated or replaced. */
+  clearTranscript(path: string): void {
+    this.db.prepare("DELETE FROM transcript_entries WHERE transcript_path = ?").run(path);
+    this.db.prepare("DELETE FROM transcript_offsets WHERE transcript_path = ?").run(path);
+  }
+
+  insertTranscriptEntries(
+    path: string,
+    sessionId: string,
+    entries: Array<{
+      uuid: string;
+      parent_uuid: string | null;
+      line_index: number;
+      kind: string;
+      tool_use_id: string | null;
+      tool_name: string | null;
+      text: string | null;
+    }>,
+  ): void {
+    const stmt = this.db.prepare(
+      `INSERT OR REPLACE INTO transcript_entries
+         (transcript_path, session_id, uuid, parent_uuid, line_index, kind, tool_use_id, tool_name, text)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertAll = this.db.transaction(() => {
+      for (const e of entries) {
+        stmt.run(
+          path,
+          sessionId,
+          e.uuid,
+          e.parent_uuid,
+          e.line_index,
+          e.kind,
+          e.tool_use_id,
+          e.tool_name,
+          e.text,
+        );
+      }
+    });
+    insertAll();
+  }
+
+  transcriptEntriesByUuid(path: string, uuid: string): Array<{
+    uuid: string;
+    parent_uuid: string | null;
+    line_index: number;
+    kind: "text" | "thinking" | "tool_use" | "other";
+    tool_use_id: string | null;
+    tool_name: string | null;
+    text: string | null;
+  }> {
+    return this.db
+      .prepare("SELECT * FROM transcript_entries WHERE transcript_path = ? AND uuid = ?")
+      .all(path, uuid) as never;
+  }
+
+  upsertToolIntent(input: {
+    session_id: string;
+    tool_use_id: string;
+    transcript_pos: number;
+    intent: string | null;
+    intent_source: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO tool_intents (session_id, tool_use_id, transcript_pos, intent, intent_source)
+         VALUES (@session_id, @tool_use_id, @transcript_pos, @intent, @intent_source)
+         ON CONFLICT(session_id, tool_use_id) DO UPDATE SET
+           transcript_pos = excluded.transcript_pos,
+           intent         = excluded.intent,
+           intent_source  = excluded.intent_source`,
+      )
+      .run(input);
+  }
+
+  toolIntents(sessionId: string): Array<{
+    tool_use_id: string;
+    transcript_pos: number;
+    intent: string | null;
+    intent_source: "text" | "thinking" | null;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT tool_use_id, transcript_pos, intent, intent_source
+         FROM tool_intents WHERE session_id = ? ORDER BY transcript_pos`,
+      )
+      .all(sessionId) as never;
+  }
+
+  /**
+   * Picker rows: enough to show and rank sessions without loading their events.
+   * `median_gap_ms` feeds the idle half of the three-state verdict, which is
+   * computed by the consumer — this only supplies the input.
+   */
+  sessionSummaries(limit = 50): unknown[] {
+    const rows = this.db
+      .prepare(
+        `SELECT s.session_id, s.cwd, s.started_at, s.last_event_at, s.last_event_at_ms,
+                s.stop_received, s.session_end_received,
+                CASE WHEN s.stop_received = 1 OR s.session_end_received = 1 THEN 1 ELSE 0 END
+                  AS explicit_end_received,
+                (SELECT COUNT(*) FROM events e WHERE e.session_id = s.session_id) AS event_count
+         FROM sessions s
+         ORDER BY COALESCE(s.last_event_at_ms, 0) DESC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+
+    const promptStmt = this.db.prepare(
+      `SELECT summary FROM events
+       WHERE session_id = ? AND hook_event_name = 'UserPromptSubmit'
+       ORDER BY seq LIMIT 1`,
+    );
+    const filesStmt = this.db.prepare(
+      `SELECT COUNT(DISTINCT tool_use_id) AS n FROM events
+       WHERE session_id = ? AND hook_event_name = 'PreToolUse'
+         AND tool_name IN ('Edit', 'Write', 'NotebookEdit')`,
+    );
+    const gapsStmt = this.db.prepare(
+      "SELECT received_at_ms FROM events WHERE session_id = ? ORDER BY seq",
+    );
+
+    return rows.map((r) => {
+      const id = r.session_id as string;
+      const times = (gapsStmt.all(id) as Array<{ received_at_ms: number }>).map(
+        (t) => t.received_at_ms,
+      );
+      const gaps: number[] = [];
+      for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+      gaps.sort((a, b) => a - b);
+      const median = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : 0;
+
+      return {
+        ...r,
+        title: (promptStmt.get(id) as { summary?: string } | undefined)?.summary ?? null,
+        files_touched: (filesStmt.get(id) as { n: number }).n,
+        median_gap_ms: median,
+      };
+    });
   }
 
   /** Raw facts a liveness heuristic needs, without computing the verdict. */

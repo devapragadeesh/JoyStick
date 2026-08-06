@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@joystick/shared':
+        specifier: workspace:*
+        version: link:packages/shared
     devDependencies:
       tsx:
         specifier: ^4.19.2

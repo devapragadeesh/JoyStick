@@ -1,7 +1,13 @@
 import { buildServer } from "./server.js";
 import { config } from "./config.js";
 
-const app = buildServer({ logger: false });
+// JOYSTICK_NO_TAIL leaves the transcript unread until /api/tail is called by
+// hand. It exists to make the transcript-lag window observable, which is
+// otherwise impossible to catch against a 500ms poll.
+const app = buildServer({
+  logger: false,
+  tail: process.env.JOYSTICK_NO_TAIL ? false : undefined,
+});
 
 async function main(): Promise<void> {
   try {

@@ -1,6 +1,8 @@
 export * from "./events.js";
 export * from "./summary.js";
 export * from "./attribution.js";
+export * from "./timeline.js";
+export * from "./sessionState.js";
 
 import type { ParentAttribution } from "./attribution.js";
 
