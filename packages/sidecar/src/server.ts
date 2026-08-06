@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { Store } from "./db.js";
 import { Broker } from "./sse.js";
 import { startTailer, tailOnce } from "./transcript.js";
+import { CodeGraphScheduler, isEditTrigger } from "./codegraph-triggers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +17,8 @@ export interface BuildOptions {
   logger?: boolean;
   /** Disabled in tests, which drive the tailer explicitly for determinism. */
   tail?: boolean;
+  /** Disabled in tests, which drive graphify extraction explicitly. */
+  codeGraph?: boolean;
 }
 
 export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
@@ -24,6 +27,8 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
 } {
   const store = opts.store ?? new Store();
   const broker = new Broker();
+  const codeGraphEnabled = opts.codeGraph !== false;
+  const codeGraph = new CodeGraphScheduler(store, config.dataDir);
 
   const app = Fastify({
     logger: opts.logger ?? false,
@@ -78,6 +83,18 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
 
     // Everything past the response is off the critical path.
     setImmediate(() => broker.publish(row));
+
+    // graphify triggers only from here — never its own hook, never its own
+    // schedule. Both branches are fire-and-forget: the response already went
+    // out, and CodeGraphScheduler's own methods never block or throw upward.
+    if (codeGraphEnabled) {
+      const cwd = asString(p.cwd);
+      if (cwd && payload.hook_event_name === "SessionStart") {
+        codeGraph.ensureInitialGraph(cwd);
+      } else if (cwd && isEditTrigger(payload.hook_event_name, asString(p.tool_name))) {
+        codeGraph.notifyEdit(cwd);
+      }
+    }
   });
 
   app.get("/health", async () => ({
@@ -138,6 +155,23 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
     return store.attributionStats(q.session_id);
   });
 
+  /**
+   * The static architecture map: file nodes and EXTRACTED-only import edges.
+   * Never includes an INFERRED edge — filtered out before storage, not here.
+   */
+  app.get("/api/codegraph", async () => ({
+    meta: store.codeGraphMeta(),
+    ...store.codeGraph(),
+  }));
+
+  /** Force a graphify extraction. Used by tests and the panel's manual refresh. */
+  app.post("/api/codegraph/extract", async (request) => {
+    const q = request.query as { repo_root?: string };
+    const repoRoot = q.repo_root ?? process.cwd();
+    codeGraph.forceExtraction(repoRoot);
+    return { triggered: true, repoRoot };
+  });
+
   // The built panel, when present. In development the panel runs under Vite on
   // its own port and proxies here instead.
   const panelDist = join(here, "..", "..", "panel", "dist");
@@ -153,6 +187,7 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
   app.addHook("onClose", async () => {
     clearInterval(heartbeat);
     tailer?.stop();
+    codeGraph.stop();
     broker.closeAll();
   });
 

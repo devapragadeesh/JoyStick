@@ -3,6 +3,7 @@ export * from "./summary.js";
 export * from "./attribution.js";
 export * from "./timeline.js";
 export * from "./sessionState.js";
+export * from "./codegraph.js";
 
 import type { ParentAttribution } from "./attribution.js";
 

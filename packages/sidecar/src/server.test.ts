@@ -10,7 +10,7 @@ let app: ReturnType<typeof buildServer>;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "joystick-test-"));
-  app = buildServer({ store: new Store(join(dir, "test.db")), tail: false });
+  app = buildServer({ store: new Store(join(dir, "test.db")), tail: false, codeGraph: false });
 });
 
 afterEach(async () => {

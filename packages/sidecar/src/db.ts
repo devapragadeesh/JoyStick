@@ -1,7 +1,19 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { EventRow, ParentAttribution, SessionRow } from "@joystick/shared";
+import type { CodeEdge, CodeGraph, CodeNode, EventRow, ParentAttribution, SessionRow } from "@joystick/shared";
+
+export interface CodeGraphMetaRow {
+  id: 1;
+  repo_root: string;
+  extracted_at: string;
+  built_at_commit: string | null;
+  extraction_mode: "full" | "incremental";
+  wall_ms: number;
+  node_count: number;
+  edge_count: number;
+  dropped_inferred_count: number;
+}
 import { config } from "./config.js";
 
 /**
@@ -98,6 +110,41 @@ CREATE TABLE IF NOT EXISTS tool_intents (
 
 CREATE INDEX IF NOT EXISTS idx_transcript_uuid ON transcript_entries (transcript_path, uuid);
 CREATE INDEX IF NOT EXISTS idx_tool_intents_session ON tool_intents (session_id);
+
+-- Phase 2: static architecture map. Chose SQLite over a flat JSON file so the
+-- graph is queryable the same way as everything else in this file (transactional
+-- replace, indexed neighbor lookups for Phase 2.5's click-to-highlight, and a
+-- natural home for Phase 3's reverse-dependency queries) rather than fragmenting
+-- storage across a second file format. One graph per joystick instance — Phase 2
+-- is scoped to a single repo, so code_graph_meta is a singleton row.
+CREATE TABLE IF NOT EXISTS code_graph_meta (
+  id                     INTEGER PRIMARY KEY CHECK (id = 1),
+  repo_root              TEXT NOT NULL,
+  extracted_at           TEXT NOT NULL,
+  built_at_commit        TEXT,
+  extraction_mode        TEXT NOT NULL,
+  wall_ms                INTEGER NOT NULL,
+  node_count             INTEGER NOT NULL,
+  edge_count             INTEGER NOT NULL,
+  dropped_inferred_count INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS code_nodes (
+  id            TEXT PRIMARY KEY,
+  file_path     TEXT NOT NULL,
+  content_hash  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS code_edges (
+  from_id  TEXT NOT NULL,
+  to_id    TEXT NOT NULL,
+  kind     TEXT NOT NULL,
+  source   TEXT NOT NULL,
+  PRIMARY KEY (from_id, to_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_edges_from ON code_edges (from_id);
+CREATE INDEX IF NOT EXISTS idx_code_edges_to   ON code_edges (to_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events (session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_tool_use_id ON events (tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_events_agent_id    ON events (agent_id);
@@ -589,6 +636,97 @@ export class Store {
          FROM sessions s ORDER BY s.started_at DESC LIMIT ?`,
       )
       .all(limit) as SessionRow[];
+  }
+
+  // ---- Phase 2: code graph ----
+
+  /**
+   * Replace the entire stored graph in one transaction. There is no partial
+   * update: either the new graph fully replaces the old one, or (on any error)
+   * the old one is untouched — never a half-written mix of two extractions.
+   */
+  replaceCodeGraph(input: {
+    graph: CodeGraph;
+    repoRoot: string;
+    extractionMode: "full" | "incremental";
+    wallMs: number;
+    droppedInferredCount: number;
+    contentHashes: Map<string, string>;
+  }): void {
+    const tx = this.db.transaction(() => {
+      this.db.exec("DELETE FROM code_edges; DELETE FROM code_nodes; DELETE FROM code_graph_meta;");
+
+      const insertNode = this.db.prepare(
+        "INSERT INTO code_nodes (id, file_path, content_hash) VALUES (?, ?, ?)",
+      );
+      for (const n of input.graph.nodes) {
+        insertNode.run(n.id, n.filePath, input.contentHashes.get(n.filePath) ?? null);
+      }
+
+      const insertEdge = this.db.prepare(
+        "INSERT OR IGNORE INTO code_edges (from_id, to_id, kind, source) VALUES (?, ?, ?, ?)",
+      );
+      for (const e of input.graph.edges) {
+        insertEdge.run(e.from, e.to, e.kind, e.source);
+      }
+
+      this.db
+        .prepare(
+          `INSERT INTO code_graph_meta
+             (id, repo_root, extracted_at, built_at_commit, extraction_mode, wall_ms, node_count, edge_count, dropped_inferred_count)
+           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.repoRoot,
+          input.graph.extractedAt,
+          input.graph.builtAtCommit,
+          input.extractionMode,
+          Math.round(input.wallMs),
+          input.graph.nodes.length,
+          input.graph.edges.length,
+          input.droppedInferredCount,
+        );
+    });
+    tx();
+  }
+
+  codeGraphMeta(): CodeGraphMetaRow | null {
+    return (this.db.prepare("SELECT * FROM code_graph_meta WHERE id = 1").get() as
+      | CodeGraphMetaRow
+      | undefined) ?? null;
+  }
+
+  codeGraph(): { nodes: CodeNode[]; edges: CodeEdge[] } {
+    const nodes = (
+      this.db.prepare("SELECT id, file_path FROM code_nodes").all() as Array<{
+        id: string;
+        file_path: string;
+      }>
+    ).map((n) => ({ id: n.id, kind: "file" as const, label: n.file_path, filePath: n.file_path }));
+
+    const edges = (
+      this.db.prepare("SELECT from_id, to_id, kind, source FROM code_edges").all() as Array<{
+        from_id: string;
+        to_id: string;
+        kind: string;
+        source: string;
+      }>
+    ).map((e) => ({
+      from: e.from_id,
+      to: e.to_id,
+      kind: e.kind as "imports",
+      source: e.source as "graphify-extracted",
+    }));
+
+    return { nodes, edges };
+  }
+
+  /** Content hashes recorded for the currently-stored graph, keyed by file path. */
+  codeGraphContentHashes(): Map<string, string> {
+    const rows = this.db
+      .prepare("SELECT file_path, content_hash FROM code_nodes WHERE content_hash IS NOT NULL")
+      .all() as Array<{ file_path: string; content_hash: string }>;
+    return new Map(rows.map((r) => [r.file_path, r.content_hash]));
   }
 
   close(): void {
