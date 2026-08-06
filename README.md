@@ -439,8 +439,9 @@ captured session must appear verbatim as a substring of that session's transcrip
 compared in JSON-encoded form so no unescaping or reformatting can slip through.
 
 **3. Null-intent handling.** ✅ Real null steps occur in every capture (10 of 11 in the
-subagent session; 1 of 6 in the prompted one). The UI renders `no stated reasoning` in dimmed
-italics with a dashed rule — never blank space, which would read as a loading state.
+subagent session; 1 of 6 in the prompted one). *(Superseded by the panel simplification
+below: `intent` is no longer the default view's basis, so a null one no longer needs a
+placeholder — see "Default view no longer depends on intent".)*
 
 **4. Unattributed subagent steps.** ✅ Rendered in a dashed amber group headed "unattributed
 subagent steps · parent could not be determined", inside their turn but never merged into the
@@ -509,6 +510,52 @@ reproduce the exact condition that let it hide:
 - `unbounded-turn.jsonl` — a turn that never receives a `Stop`, sitting in the **middle** of
   a three-turn session. The Phase 0 kill case missed this because there the unterminated
   turn was last, where an unbounded end is harmless.
+
+---
+
+## Panel simplification: default view no longer depends on intent
+
+Phase 1's default view leaned on `intent` — present on only ~37% of real steps — so 63% of
+steps rendered as a bare tool call with nothing readable, next to a minority that showed a
+full sentence and inconsistent density. Fixed at the rendering layer only: no change to
+`TimelineStep`, the join model, `displayOrder`, `toolResponseOf()`, subagent grouping, turn
+grouping, or session state.
+
+**Every step now shows exactly one deterministic line by default**, from `summarizeStep()`
+in `packages/panel/src/summarize.ts` — a pure, total function keyed only on `kind`/
+`toolName`/`target`/`status`. It never reads `step.intent`; a test proves this by making
+`intent` throw on access and asserting `summarizeStep` still succeeds, and a second test
+asserts two steps identical except for `intent` produce an identical line. Diffs, output,
+the full untruncated command/path, and `intent` (when present, labeled "Claude's reasoning")
+all move behind one expand control per step — `intent` is additive detail at that point,
+same tier as the diff, never a fallback anyone reads from.
+
+The former "no stated reasoning" placeholder is removed outright, not just hidden: the null
+case needed a placeholder only because Phase 1's default view had nothing else to show when
+`intent` was absent. Now the default view always has the one-liner, so there is nothing to
+mark as absent.
+
+**Judgment calls:**
+- Error auto-expand — already existed from Phase 1 (`useState(isError)`), just re-verified
+  it still holds after the rewrite. No new work; noting it since the brief asked for it.
+- Added a "target"/"command" line inside the expanded detail so the full path or command is
+  still reachable once removed from the collapsed row — Bash commands past 50 characters
+  would otherwise be unrecoverable. Not explicitly requested; flagged here rather than done
+  silently.
+- `ExploredSummary`'s group header (multiple folded Read/Grep/Glob calls) was reworded to
+  the same "Looked through N files" phrasing as the single-step case, since it is that same
+  line standing in for several calls at once, not a separate concept.
+- Verification 2 ("component test... render an identical default view") is implemented as a
+  `summarizeStep`-level equivalence test rather than a rendered-DOM snapshot: the repo has no
+  jsdom or testing-library today, and `summarizeStep` never reading `intent` is the thing
+  that *makes* the rendered output identical, so proving it at the function level is a direct
+  proof of the same property, not a weaker substitute for it.
+
+89 tests total (was 75); all Phase 1 suites pass unmodified.
+
+```
+✓ packages/panel/src/summarize.test.ts     (14)
+```
 
 ## Known gaps
 

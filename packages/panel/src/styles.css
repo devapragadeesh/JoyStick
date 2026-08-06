@@ -234,6 +234,9 @@ main {
   cursor: pointer;
   padding: 1px 0;
 }
+.step-row:disabled {
+  cursor: default;
+}
 
 .bullet {
   font-size: 9px;
@@ -248,24 +251,19 @@ main {
   color: var(--amber);
 }
 
-.step-tool {
-  color: var(--blue);
-  flex: 0 0 auto;
-}
-.step-error .step-tool {
-  color: var(--red);
-}
-
-.step-target {
+/* The one always-visible line. Everything else lives behind the chevron. */
+.step-summary {
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.step-error .step-summary {
+  color: var(--red);
+}
 
-.step-duration {
+.chevron {
   margin-left: auto;
-  font-size: 11px;
   color: var(--dim);
   flex: 0 0 auto;
 }
@@ -276,19 +274,25 @@ main {
   border: 1px solid var(--amber);
   border-radius: 3px;
   padding: 0 4px;
+  flex: 0 0 auto;
 }
 
-/* ---- intent ---- */
+/* ---- expanded detail ---- */
 
-.intent {
-  margin: 2px 0 4px 17px;
-  padding-left: 8px;
-  border-left: 2px solid var(--line);
-  color: var(--fg);
-  white-space: pre-wrap;
+.step-body {
+  margin: 4px 0 6px 17px;
 }
 
-.intent-source {
+.step-meta {
+  margin: 0 0 4px;
+  font-size: 11px;
+}
+
+.step-context {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.step-context-label {
   display: inline-block;
   font-size: 10px;
   text-transform: uppercase;
@@ -296,21 +300,34 @@ main {
   color: var(--dim);
   margin-right: 6px;
 }
+.step-context code {
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.intent-block {
+  margin: 0 0 8px;
+}
+.intent-block-label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+  margin-bottom: 2px;
+}
+
+.intent {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  color: var(--fg);
+  white-space: pre-wrap;
+}
 
 .intent-thinking {
   color: var(--purple);
-}
-
-.intent-none {
-  color: var(--dim);
-  font-style: italic;
-  border-left-style: dashed;
-}
-
-/* ---- bodies ---- */
-
-.step-body {
-  margin: 4px 0 6px 17px;
+  border-left-color: var(--purple);
 }
 
 .diff,

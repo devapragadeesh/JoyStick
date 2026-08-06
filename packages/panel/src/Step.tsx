@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TimelineStep } from "@joystick/shared";
+import { summarizeStep } from "./summarize.js";
 
 /**
  * Per-step rendering.
@@ -7,6 +8,13 @@ import type { TimelineStep } from "@joystick/shared";
  * Every string here originates in a hook payload or a transcript file and is
  * therefore untrusted. It reaches the DOM only as a React text child — there is
  * no dangerouslySetInnerHTML anywhere in this panel.
+ *
+ * Default view is exactly one line: a status icon and `summarizeStep(step)`.
+ * Everything else — stated intent, diff, output, the full command or path —
+ * lives behind a single expand control. `intent` is present on only ~37% of
+ * steps, so the default view cannot depend on it; it appears only inside the
+ * expanded detail, as one more piece of context alongside the diff, never as
+ * the thing standing in for a summary.
  */
 
 const EXPLORATORY = new Set(["Read", "Grep", "Glob", "NotebookRead"]);
@@ -47,32 +55,44 @@ export function Step({
   const isError = step.status === "error";
   const exploratory = EXPLORATORY.has(step.toolName ?? "");
 
-  // Errors never start collapsed, whatever their type — a failure the user has
-  // to expand to notice is a failure they will miss.
+  // Errors start expanded, same as Phase 1: a failure the user has to click to
+  // even see the detail on is a failure they will miss. The one-line summary
+  // above already carries the "Failed: " prefix regardless of this state, so
+  // this only controls whether the diff/output is immediately visible.
   const [open, setOpen] = useState(isError);
   const [childrenOpen, setChildrenOpen] = useState(false);
 
+  const hasDetail = step.intent !== null || step.diff || step.output || step.target || step.durationMs !== undefined;
+
   return (
     <li className={`step step-${step.status} ${depth > 0 ? "step-nested" : ""}`}>
-      <button className="step-row" onClick={() => setOpen((o) => !o)}>
+      <button
+        className="step-row"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        disabled={!hasDetail}
+      >
         <span className={`bullet bullet-${step.status}`} aria-hidden>
           {step.status === "pending" ? "◌" : step.status === "error" ? "✕" : "●"}
         </span>
-        <span className="step-tool">{step.toolName ?? step.kind}</span>
-        {step.target && <span className="step-target">{step.target}</span>}
+        <span className="step-summary">{summarizeStep(step)}</span>
         {step.status === "pending" && <span className="inflight">in flight</span>}
-        {step.durationMs !== undefined && (
-          <span className="step-duration">{formatDuration(step.durationMs)}</span>
+        {hasDetail && (
+          <span className="chevron" aria-hidden>
+            {open ? "▾" : "▸"}
+          </span>
         )}
       </button>
 
-      <Intent step={step} />
-
-      {open && (
+      {open && hasDetail && (
         <div className="step-body">
+          {step.durationMs !== undefined && (
+            <p className="step-meta muted">{formatDuration(step.durationMs)}</p>
+          )}
+          {step.target && <Context step={step} />}
+          <Intent step={step} />
           {step.diff && <Diff diff={step.diff} />}
           {step.output && !step.diff && <Output text={step.output} exploratory={exploratory} />}
-          {!step.diff && !step.output && <p className="muted">No output recorded.</p>}
         </div>
       )}
 
@@ -102,19 +122,34 @@ export function Step({
 }
 
 /**
- * Intent is shown verbatim or marked explicitly absent. A blank space would
- * read as "still loading" rather than "Claude said nothing here", which is the
- * one misreading that would make this panel worse than no panel.
+ * The full path or command the one-line summary truncated or omitted.
+ *
+ * Shown in the expanded detail so nothing is lost by moving the default view
+ * to a fixed-format summary — Bash's full command in particular would
+ * otherwise be unrecoverable past 50 characters.
+ */
+function Context({ step }: { step: TimelineStep }) {
+  return (
+    <p className="step-context">
+      <span className="step-context-label">{step.toolName === "Bash" ? "command" : "target"}</span>
+      <code>{step.target}</code>
+    </p>
+  );
+}
+
+/**
+ * Intent is additive detail inside the expanded view, same tier as the diff —
+ * not the thing the default view leans on. Rendered only when present: the
+ * null case needs no placeholder now that the default view always shows the
+ * one-line summary regardless of whether intent exists.
  */
 function Intent({ step }: { step: TimelineStep }) {
-  if (step.intent === null) {
-    return <p className="intent intent-none">no stated reasoning</p>;
-  }
+  if (step.intent === null) return null;
   return (
-    <p className={`intent intent-${step.intentSource}`}>
-      <span className="intent-source">{step.intentSource}</span>
-      {step.intent}
-    </p>
+    <div className="intent-block">
+      <span className="intent-block-label">Claude's reasoning</span>
+      <p className={`intent intent-${step.intentSource}`}>{step.intent}</p>
+    </div>
   );
 }
 
@@ -192,22 +227,30 @@ function Output({ text, exploratory }: { text: string; exploratory: boolean }) {
   );
 }
 
-/** One-line collapsed form for a run of exploratory steps. */
+/**
+ * One-line collapsed form for a run of exploratory steps.
+ *
+ * Uses the same "Looked through N files" phrasing as a lone Read/Grep/Glob
+ * step's `summarizeStep` line, since this group header is standing in for
+ * exactly that line across several calls at once — not a different concept.
+ */
 export function ExploredSummary({ steps }: { steps: TimelineStep[] }) {
   const [open, setOpen] = useState(false);
   const targets = steps.map((s) => s.target).filter(Boolean);
 
   return (
     <li className="step step-explored">
-      <button className="step-row" onClick={() => setOpen((o) => !o)}>
+      <button className="step-row" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span className="bullet bullet-ok" aria-hidden>
           ●
         </span>
-        <span className="step-tool">explored</span>
-        <span className="step-target">
-          {steps.length} {steps.length === 1 ? "call" : "calls"}
+        <span className="step-summary">
+          Looked through {steps.length} file{steps.length === 1 ? "" : "s"}
           {targets.length > 0 ? ` · ${targets.slice(0, 3).join(", ")}` : ""}
           {targets.length > 3 ? " …" : ""}
+        </span>
+        <span className="chevron" aria-hidden>
+          {open ? "▾" : "▸"}
         </span>
       </button>
       {open && (
