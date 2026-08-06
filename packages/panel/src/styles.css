@@ -340,6 +340,32 @@ main {
   margin-left: 17px;
 }
 
+.delegation {
+  margin: 3px 0 4px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--purple);
+  border-radius: 4px;
+  background: #0b0c10;
+}
+
+.delegation-line {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+}
+.delegation-line:last-of-type {
+  margin-bottom: 0;
+}
+
+.delegation-label {
+  display: inline-block;
+  min-width: 62px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--purple);
+}
+
 .children-toggle {
   background: none;
   border: 0;

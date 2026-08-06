@@ -349,26 +349,59 @@ what `resolveIntent` walks.
 
 **Intent coverage is structural, and thinner than the spec assumes.** Only the first tool
 call of a run tends to follow prose; later ones follow a `tool_result` record and have no
-preceding reasoning at all.
+preceding reasoning at all. Measure it with `pnpm coverage <transcript|dir>`, which runs the
+product's own extraction path rather than a reimplementation.
 
-| session | tool calls | text parent | thinking parent | combined |
+**`thinking` blocks are persisted without their text.** Every one carries a `signature` and
+an empty `thinking` string: **0 of 2944** thinking blocks across every project on the
+development machine had usable content. An earlier revision of this document reported 44%
+coverage by counting thinking blocks as available reasoning — that was wrong, and the real
+figure is the text-only column. The code was always correct (an empty string is falsy, so it
+yields `null`), and `intentSource: "thinking"` remains wired up in case the format changes,
+but it fires 0% of the time today.
+
+| session | tool calls | text | thinking | usable |
 | --- | --- | --- | --- | --- |
-| `-p` scratch runs | 2–6 | ~1 each | 0 | 16–50% |
-| real interactive | 180 | 63 (35%) | 17 (9%) | **44%** |
-| prompted to explain each step | 6 | 5 | 0 | **83%** |
-
-`thinking` blocks are verbatim transcript content, so counting them is compliant with the
-never-generate constraint and lifts coverage meaningfully. `intentSource` records which of
-the two a step used, and the UI labels them differently. Everything else shows the explicit
-"no stated reasoning" marker.
+| real interactive | 263 | 37% | 0% | **37%** |
+| `-p` runs, aggregate | 76 | 42% | 0% | 42% |
+| prompted to narrate each step | 6 | 83% | 0% | 83% |
 
 **Subagent work has no transcript representation.** `isSidechain: true` appears 0 times. A
 transcript contains the `Agent` tool_use but none of the subagent's internal calls, which
 exist only as hook events. Two consequences: subagent steps can never carry an intent, and
 they have no transcript position to sort by. `displayOrder` therefore packs two levels into
 one integer — `transcriptPos * 1e6 + seq` — anchoring nested steps to their parent's
-position and using `seq` only inside the one region where no transcript data can exist. A
-subagent's returned summary is still available, from the `Agent` tool result.
+position and using `seq` only inside the one region where no transcript data can exist.
+
+Rather than reconstruct a subagent's reasoning, a group is narrated by two facts already in
+the data: the delegating call's prompt and the subagent's `last_assistant_message`, shown as
+**asked** / **returned** on the group header. Nested steps keep `intent: null` and the
+ordinary marker — no special case, nothing invented. Ingesting sidechain transcripts is a
+Phase 2+ candidate, not built.
+
+### Intent coverage experiment
+
+A `CLAUDE.md` house-style convention asking for a one-line reason before non-trivial tool
+calls, tested on matched tasks across two multi-turn sessions and one single-shot `-p` run
+per arm, in two identical scratch repos differing only by that file:
+
+| arm | tool calls | coverage |
+| --- | --- | --- |
+| baseline, no convention | 12 | **17%** |
+| with the convention | 11 | **45%** |
+
+A real move — 2.6× — and consistent across all three session pairs (20→50, 25→50, 0→33).
+Task quality was unaffected: both arms produced correct, equivalent JSDoc and clean syntax
+checks, with near-identical tool counts, so the convention is not buying coverage with
+busywork.
+
+It still falls well short of the ~65–70% bar set for adopting it as a default, so **Phase 2
+should be designed for a timeline where most steps have no stated reasoning**. The
+convention is worth documenting as opt-in for people who want denser narration; it is not
+worth shipping as a default on a 45% return. One attempt, no wording iteration.
+
+The interactive baseline of 37% was not re-measured under the convention — new interactive
+sessions cannot be driven programmatically. The controlled comparison above is within-mode.
 
 ### Architecture
 
@@ -452,9 +485,9 @@ reload, re-selected, and re-snapshotted: **byte-identical, 2052 chars both**.
 `tool_calls` entry in a real capture resolves to a defined value, and all 11 resolved steps
 carry non-empty output. This is the standing regression test for the field-name bug.
 
-### Phase 1 tests
+### Tests
 
-65 tests. The intent-integrity, ordering, and coverage suites run against real captures.
+75 tests. The intent-integrity, ordering, and coverage suites run against real captures.
 
 ```
 ✓ packages/shared/src/summary.test.ts      (8)
@@ -462,7 +495,20 @@ carry non-empty output. This is the standing regression test for the field-name 
 ✓ packages/sidecar/src/server.test.ts     (10)
 ✓ packages/sidecar/src/closeout.test.ts   (15)
 ✓ packages/sidecar/src/timeline.test.ts   (25)
+✓ packages/sidecar/src/regression.test.ts (10)
 ```
+
+`regression.test.ts` covers the two bugs that verification caught and review did not. Both
+existed because every fixture at the time was well-formed, so each has a fixture shaped to
+reproduce the exact condition that let it hide:
+
+- `late-backfill.jsonl` — a step whose transcript position arrives after a provisional one
+  was already assigned, positioned in the **middle** of a run with known positions on both
+  sides. The original bug parked provisional steps at the lowest slot rather than the
+  highest; a fixture where the provisional value happened to be lowest would have passed.
+- `unbounded-turn.jsonl` — a turn that never receives a `Stop`, sitting in the **middle** of
+  a three-turn session. The Phase 0 kill case missed this because there the unterminated
+  turn was last, where an unbounded end is harmless.
 
 ## Known gaps
 

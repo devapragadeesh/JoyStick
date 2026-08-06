@@ -47,6 +47,18 @@ export interface TimelineStep {
   parentStepId?: string | null;
   parentAttribution: StepAttribution;
   status: StepStatus;
+
+  /**
+   * Narration for a delegating Agent call, shown on the group header rather
+   * than per nested step.
+   *
+   * Subagent-internal steps never get an `intent`: their reasoning is not in
+   * the parent transcript and sidechain transcripts are not ingested. Rather
+   * than reconstruct something, a subagent group is narrated by the two facts
+   * already present — what the parent asked for, and what came back.
+   */
+  delegationPrompt?: string;
+  returnedSummary?: string;
 }
 
 export interface TurnGroup {
@@ -212,12 +224,21 @@ export function buildTimeline(events: EventRow[], intents: ToolIntent[]): TurnGr
 
   // Which Agent call each subagent belongs to, so nested steps can anchor to it.
   const agentParent = new Map<string, { toolUseId: string | null; attribution: ParentAttribution }>();
+  // What each subagent reported back, keyed by the Agent call that spawned it.
+  const summaryByParent = new Map<string, string>();
+
   for (const e of byArrival) {
     if (e.agent_id && !agentParent.has(e.agent_id)) {
       agentParent.set(e.agent_id, {
         toolUseId: e.parent_tool_use_id,
         attribution: e.parent_attribution ?? "unattributed",
       });
+    }
+    if (e.hook_event_name === "SubagentStop" && e.parent_tool_use_id) {
+      const raw = e.raw as Record<string, unknown> | null;
+      if (typeof raw?.last_assistant_message === "string") {
+        summaryByParent.set(e.parent_tool_use_id, raw.last_assistant_message);
+      }
     }
   }
 
@@ -239,9 +260,21 @@ export function buildTimeline(events: EventRow[], intents: ToolIntent[]): TurnGr
     let provisional = false;
 
     if (agentId) {
-      // Nested: anchor to the parent Agent call's transcript position. An
-      // unattributed agent has no parent to anchor to, so it trails the last
-      // root step we did place — it renders in its own group regardless.
+      // DOCUMENTED DEVIATION from "transcript order wins".
+      //
+      // Subagent-internal steps order by `seq` within their group, not by
+      // transcript position. This is not an oversight and not a bug: a
+      // subagent's tool calls never appear in the parent transcript, and
+      // sidechain transcripts are deliberately not ingested, so no transcript
+      // position exists for these steps to sort by. `seq` is the only ordering
+      // information there is inside a group.
+      //
+      // Transcript order still governs everything else, including where the
+      // group as a whole sits: the group is anchored to its parent Agent call's
+      // transcript position, so `seq` only ever orders steps relative to their
+      // siblings inside one group. An unattributed agent has no parent to
+      // anchor to, so it trails the last root step we placed — it renders in
+      // its own group regardless.
       const parentIntent = parent?.toolUseId ? intentByToolUse.get(parent.toolUseId) : undefined;
       if (parentIntent) {
         displayOrder = packOrder(parentIntent.transcript_pos, anchor.seq);
@@ -269,6 +302,17 @@ export function buildTimeline(events: EventRow[], intents: ToolIntent[]): TurnGr
       ? textOf(toolResponseOf(resolution.raw))
       : textOf(batchResults.get(toolUseId));
 
+    const isDelegation = toolName === "Agent";
+    const delegationPrompt = isDelegation
+      ? ((typeof input.prompt === "string" ? input.prompt : undefined) ??
+        (typeof input.description === "string" ? input.description : undefined))
+      : undefined;
+    // Prefer what SubagentStop reported; the Agent tool result carries the same
+    // text, but only once the call has resolved.
+    const returnedSummary = isDelegation
+      ? (summaryByParent.get(toolUseId) ?? output)
+      : undefined;
+
     steps.push({
       id: toolUseId,
       sessionId: anchor.session_id,
@@ -293,6 +337,8 @@ export function buildTimeline(events: EventRow[], intents: ToolIntent[]): TurnGr
       parentStepId: agentId ? (parent?.toolUseId ?? null) : undefined,
       parentAttribution: agentId ? (parent?.attribution ?? "unattributed") : "root",
       status: slot.failure ? "error" : resolution ? "ok" : "pending",
+      delegationPrompt,
+      returnedSummary,
     });
   }
 

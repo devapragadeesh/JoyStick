@@ -78,6 +78,12 @@ export function Step({
 
       {children && children.length > 0 && (
         <div className="children">
+          {/*
+            A subagent group is narrated here, at the group level, rather than
+            per nested step: the steps inside have no reasoning of their own to
+            show, so the honest summary is what was asked and what came back.
+          */}
+          <Delegation step={step} />
           <button className="children-toggle" onClick={() => setChildrenOpen((o) => !o)}>
             {childrenOpen ? "▾" : "▸"} {children.length} subagent step
             {children.length === 1 ? "" : "s"}
@@ -109,6 +115,53 @@ function Intent({ step }: { step: TimelineStep }) {
       <span className="intent-source">{step.intentSource}</span>
       {step.intent}
     </p>
+  );
+}
+
+/**
+ * What the parent delegated, and what came back.
+ *
+ * Both strings already exist in the captured data — the Agent call's prompt and
+ * the subagent's `last_assistant_message`. Neither is generated, and neither is
+ * an `intent`: nested steps keep `intent: null` and show the ordinary
+ * no-stated-reasoning marker.
+ */
+function Delegation({ step }: { step: TimelineStep }) {
+  const [open, setOpen] = useState(false);
+  if (!step.delegationPrompt && !step.returnedSummary) return null;
+
+  return (
+    <div className="delegation">
+      {step.delegationPrompt && (
+        <p className="delegation-line">
+          <span className="delegation-label">asked</span>
+          {clip(step.delegationPrompt, open ? Infinity : 220)}
+        </p>
+      )}
+      {step.returnedSummary && (
+        <p className="delegation-line">
+          <span className="delegation-label">returned</span>
+          {clip(step.returnedSummary, open ? Infinity : 220)}
+        </p>
+      )}
+      {needsClip(step, 220) && (
+        <button className="children-toggle" onClick={() => setOpen((o) => !o)}>
+          {open ? "show less" : "show full"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function clip(text: string, max: number): string {
+  const flat = text.trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+function needsClip(step: TimelineStep, max: number): boolean {
+  return (
+    (step.delegationPrompt?.trim().length ?? 0) > max ||
+    (step.returnedSummary?.trim().length ?? 0) > max
   );
 }
 

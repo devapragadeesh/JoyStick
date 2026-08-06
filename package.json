@@ -11,7 +11,8 @@
     "test": "vitest run",
     "replay": "tsx scripts/replay.ts",
     "bench": "tsx scripts/bench.ts",
-    "verify": "tsx scripts/verify.ts"
+    "verify": "tsx scripts/verify.ts",
+    "coverage": "tsx scripts/coverage.ts"
   },
   "dependencies": {
     "@joystick/shared": "workspace:*"
