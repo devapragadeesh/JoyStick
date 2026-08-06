@@ -79,11 +79,103 @@ h3 {
   border-color: var(--red);
 }
 
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--fg);
+}
+.tab-active {
+  color: var(--fg);
+  border-color: var(--line);
+  background: var(--panel);
+}
+
 .layout {
   flex: 1;
   display: grid;
   grid-template-columns: 260px 1fr;
   min-height: 0;
+}
+
+/* ---- code map ---- */
+
+.codemap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.codemap-toolbar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.codemap-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.codemap-collapse-all {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.codemap-collapse-all:hover {
+  color: var(--fg);
+}
+
+.codemap-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+  flex: 0 0 auto;
+}
+
+.codemap-chip {
+  background: var(--panel);
+  border: 1px solid var(--purple);
+  color: var(--purple);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.codemap-canvas {
+  flex: 1;
+  min-height: 0;
+}
+
+.codemap-status,
+.codemap-hint {
+  padding: 8px 16px;
+  flex: 0 0 auto;
 }
 
 /* ---- picker ---- */

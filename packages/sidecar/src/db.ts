@@ -1,19 +1,17 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CodeEdge, CodeGraph, CodeNode, EventRow, ParentAttribution, SessionRow } from "@joystick/shared";
+import type {
+  CodeEdge,
+  CodeGraph,
+  CodeGraphMeta,
+  CodeNode,
+  EventRow,
+  ParentAttribution,
+  SessionRow,
+} from "@joystick/shared";
 
-export interface CodeGraphMetaRow {
-  id: 1;
-  repo_root: string;
-  extracted_at: string;
-  built_at_commit: string | null;
-  extraction_mode: "full" | "incremental";
-  wall_ms: number;
-  node_count: number;
-  edge_count: number;
-  dropped_inferred_count: number;
-}
+export type CodeGraphMetaRow = CodeGraphMeta;
 import { config } from "./config.js";
 
 /**

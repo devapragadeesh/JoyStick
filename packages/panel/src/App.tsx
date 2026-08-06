@@ -1,12 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Timeline } from "./Timeline.js";
 import { SessionPicker } from "./SessionPicker.js";
+import { CodeMap } from "./CodeMap.js";
 import { useSessions, useSessionTimeline } from "./useSession.js";
+
+type Tab = "timeline" | "codemap";
 
 export function App() {
   const { sessions, status } = useSessions();
   const [selected, setSelected] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [tab, setTab] = useState<Tab>("timeline");
 
   // Session state depends on elapsed time, not only on new events, so the clock
   // has to advance independently of the data.
@@ -28,25 +32,37 @@ export function App() {
       <header>
         <h1>joystick</h1>
         <span className={`status status-${status}`}>{status}</span>
-        <span className="muted">{stepCount} steps</span>
+        <nav className="tabs">
+          <button className={tab === "timeline" ? "tab tab-active" : "tab"} onClick={() => setTab("timeline")}>
+            Timeline
+          </button>
+          <button className={tab === "codemap" ? "tab tab-active" : "tab"} onClick={() => setTab("codemap")}>
+            Import graph
+          </button>
+        </nav>
+        {tab === "timeline" && <span className="muted">{stepCount} steps</span>}
       </header>
 
-      <div className="layout">
-        <SessionPicker
-          sessions={sessions}
-          selected={selected}
-          onSelect={setSelected}
-          now={now}
-        />
+      {tab === "timeline" && (
+        <div className="layout">
+          <SessionPicker
+            sessions={sessions}
+            selected={selected}
+            onSelect={setSelected}
+            now={now}
+          />
 
-        <main ref={scrollRef}>
-          {loading && <p className="muted">Loading…</p>}
-          {!loading && selected === null && <p className="empty">Select a session.</p>}
-          {!loading && selected !== null && <Timeline turns={turns} />}
-        </main>
-      </div>
+          <main ref={scrollRef}>
+            {loading && <p className="muted">Loading…</p>}
+            {!loading && selected === null && <p className="empty">Select a session.</p>}
+            {!loading && selected !== null && <Timeline turns={turns} />}
+          </main>
+        </div>
+      )}
 
-      {!atLive && pendingCount > 0 && (
+      {tab === "codemap" && <CodeMap />}
+
+      {tab === "timeline" && !atLive && pendingCount > 0 && (
         <button className="jump" onClick={jumpToLive}>
           {pendingCount} new step{pendingCount === 1 ? "" : "s"} · jump to live
         </button>

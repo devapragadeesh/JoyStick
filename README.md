@@ -5,7 +5,7 @@ Renders a Claude Code session as a readable, teachable timeline in a local brows
 The plugin has no UI inside the Claude Code TUI. All UI is a local web app served by a sidecar
 process on `127.0.0.1`. Claude Code talks to the sidecar through hooks.
 
-**Status: Phase 1 complete** — event spine plus a narrated, transcript-ordered timeline.
+**Status: Phase 2 complete** — event spine, narrated timeline, and a static import-graph map.
 
 ---
 
@@ -555,6 +555,159 @@ mark as absent.
 
 ```
 ✓ packages/panel/src/summarize.test.ts     (14)
+```
+
+---
+
+## Phase 2 — static architecture map
+
+A second panel tab: an interactive map of file-level import relationships, built on graphify's
+code-only extraction — evaluated in a prior time-boxed spike (not committed to this repo; findings
+summarized inline below wherever they shaped a decision). No live coupling to edits in this phase
+— the graph refreshes on a debounce, but nothing animates in the open panel yet.
+
+### Housekeeping, first
+
+The spike found joystick's own plugin failing to load: `plugin.json` declared
+`"hooks": "./hooks/hooks.json"`, which is also auto-loaded by convention, so every event fired
+twice. Fixed and committed alone, before any Phase 2 code: removed the redundant declaration,
+verified a real session now fires each event exactly once.
+
+### What changed, and why
+
+**graphify is invoked only by joystick — never the reverse.** `packages/sidecar/graphify.ts`
+shells out to `graphify extract . --code-only` as an async subprocess, triggered only from
+`packages/sidecar/codegraph-triggers.ts`: once on `SessionStart` if no graph is cached, and
+debounced (2.5s of inactivity) on `PostToolUse` for `Edit`/`Write`/`NotebookEdit`. graphify's own
+`claude install` hook is never installed — the spike found it synchronous and directive-injecting,
+which is incompatible with every constraint this project has held since Phase 0.
+
+**`INFERRED` edges are filtered at the parse boundary, not the UI.** `mapGraphifyOutput()` in
+`packages/shared/codegraph.ts` drops every non-`EXTRACTED` edge before a `CodeEdge` is ever
+constructed. `CodeEdge` itself has no field that could hold a confidence tag — there is nowhere
+for an `INFERRED` edge to be stored even by mistake. Verified live: the raw extraction of
+joystick's own repo contains 5 `INFERRED` edges (`dropped_inferred_count: 5` in the stored meta);
+zero appear in `/api/codegraph`'s edges, and the SQLite schema for `code_edges` has no confidence
+column at all.
+
+**graphify's shape is validated, not trusted.** `GraphifyOutputSchema` (zod) checks the real
+`{nodes, links}` shape at the parse boundary. A malformed or unexpected payload — verified live by
+feeding the sidecar an actual `graph.json` mutated into the README-implied `{nodes, edges}`
+shape — logs `graphify output rejected, keeping previous graph: ...` and leaves the previously
+cached graph completely untouched, rather than crashing the sidecar or replacing a working graph
+with an empty one.
+
+**File identity assumption from the spike was wrong on inspection.** The spike's mapping script
+assumed a file-level node's `id` equals its `source_file` string. Building the real mapper and
+checking a multi-symbol file (`App.tsx`) directly: the file-level node's `id` is a slugified path
+(`packages_panel_src_app`), not the literal source path. Every node still carries a correct
+`source_file` field, though, so `CodeNode`s are now derived from the set of distinct `source_file`
+values across *all* nodes — sidestepping the ambiguity about which node "is" the file, rather than
+trying to identify it.
+
+**`graphify update` is rejected, benchmarked on joystick's own repo, not assumed.** A single
+one-line comment addition — which changes zero AST nodes — was fed through both paths on the
+identical edited tree:
+
+| path | nodes | edges | wall clock |
+| --- | --- | --- | --- |
+| fresh full `extract` (ground truth) | 414 (unchanged) | 624 (unchanged) | ~1.0–1.2s |
+| `graphify update` | 450 (+36) | 653 (+29) | ~1.0–1.2s |
+
+No time savings, and a measurably wrong graph. Every trigger — cold start and debounced
+re-extraction alike — runs a full extract. This is also the number that answers whether Phase 3's
+live coupling is feasible on top of this: **~1.0–1.2s per full reindex on joystick's own ~51-file
+repo.**
+
+**Storage: SQLite, not a flat JSON file.** Three new tables (`code_graph_meta`, `code_nodes`,
+`code_edges`) under the same database as everything else, replaced transactionally on every
+extraction. Chosen over a JSON file so the graph is queryable the same way as the rest of the
+sidecar — indexed neighbor lookups for the click-to-highlight interaction, and a natural home for
+Phase 3's reverse-dependency queries — rather than fragmenting storage across two formats.
+Per-file SHA-256 content hashes are computed by joystick itself, since graphify's own output
+carries none.
+
+### Rendering
+
+Cytoscape.js, `cose` force-directed layout (built into cytoscape core — no extra dependency
+needed). Two-level model, no compound nesting: a directory is either one collapsed aggregate node
+or fully expanded to its individual files, never both — `packages/panel/codeMapLayout.ts` is a
+pure, DOM-free function that resolves every edge endpoint to whichever id is currently visible, so
+an edge from an expanded file to a still-collapsed directory correctly points at the aggregate.
+Clicking a file highlights its direct neighbors and fades everything else; clicking a directory
+expands it. Labeled "Import graph" throughout, deliberately, with an inline "extracted imports
+only · no call graph" caption — Phase 2 ships file-level `EXTRACTED` import edges and nothing
+else, and the UI says so rather than implying more.
+
+### Phase 2 verification
+
+**1. Hook double-fire fix.** ✅ Removed the redundant `plugin.json` declaration; a real session
+against a scratch repo shows every event exactly once (`SessionStart` → `UserPromptSubmit` →
+`PreToolUse` → `PostToolUse` → `PostToolBatch` → `Stop`, no duplicates).
+
+**2. No API key / nothing leaves the machine.** ✅ Re-confirmed directly in this session, not
+inherited from the spike: every provider credential env var unset, extraction succeeds, and
+`lsof -i` polled through the entire run shows zero network connections.
+
+**3. Accuracy spot-check.** ✅ 10/10 — this time pulled from the running sidecar's actual
+`/api/codegraph`, not the spike's scratch script, and manually verified against real source. One
+(`db.ts → codegraph.ts`) required tracing through the `@joystick/shared` barrel re-export to
+confirm — correct, but not a direct same-file import, which is itself informative about how
+graphify resolves package-boundary imports.
+
+**4. Schema validation works.** ✅ Fed the sidecar a real `graph.json` mutated into
+`{nodes, edges}` (the README-implied, wrong shape). Result: `graphify output rejected, keeping
+previous graph: ...` logged, sidecar's `/health` unaffected before and after, and — tested as two
+separate cases — both "no graph existed yet" (stays `null`) and "a good graph already existed"
+(stays byte-identical, confirmed by matching `extracted_at`) survive a subsequent bad extraction
+untouched.
+
+**5. `INFERRED` edges never reach the graph.** ✅ Confirmed three ways: `dropped_inferred_count:
+5` in the stored meta (proving they were seen and counted, not silently absent from the source
+data), every stored edge's `source` field is `graphify-extracted` with no other value present, and
+`CodeEdge`/the `code_edges` SQL schema have no field capable of holding a confidence tag at all —
+structurally, not just behaviorally, impossible.
+
+**6. Async, non-blocking trigger.** ✅ Phase-0-style sleep injection: `GRAPHIFY_BIN` pointed at a
+stub that sleeps 5 seconds before writing valid output. `SessionStart` (which triggers the
+extraction) still responded in **21ms**, and 20 further unrelated events fired *during* the 5s
+window totaled **234ms** (~11ms each) — versus the >5000ms either would have taken if the
+subprocess were blocking. The extraction completed and populated the graph after the sleep
+elapsed, confirming the slow path isn't silently dropped, just never waited on.
+
+**7. Incremental benchmark result.** ✅ See above: `update` rejected (wrong graph, no time
+savings); full extract chosen for every trigger, ~1.0–1.2s on joystick's own repo.
+
+**8. Rendering at real scale.** ✅ Screenshotted against joystick's own live repo (52 files, 97
+import edges after dedup): default collapsed-by-directory view (6 directory nodes, correctly
+weighted edges) and an expanded `packages/panel/src` (12 files, real edges to still-collapsed
+directories, breadcrumb chips to re-collapse). A real bug surfaced taking these screenshots — see
+below.
+
+**9. Neighbor highlighting.** ✅ Screenshotted: clicking `App.tsx` highlights its five direct
+neighbors (`Timeline.tsx`, `useSession.ts`, `SessionPicker.tsx`, `CodeMap.tsx`, `main.tsx`) in
+green; every other node and edge fades to ~12% opacity.
+
+### A UX bug found while taking the verification screenshots, not by a test
+
+`useCodeGraph`'s poll (every 4s, since the graph updates asynchronously in the background with
+nothing to push a change notification) called `setGraph` with a fresh object on every tick even
+when the underlying data hadn't changed. A fresh object reference re-triggered the `cose` layout
+on an unrelated timer, visibly shuffling every node's position out from under the cursor — which
+is exactly why the first highlight-interaction screenshot attempt missed its target. Fixed by
+skipping `setGraph` when the polled `extracted_at` matches what's already held.
+
+### Tests
+
+130 tests (was 89). `packages/shared/codegraph.test.ts` and `packages/panel/codeMapLayout.test.ts`
+run against a real captured `graph.json` from joystick's own repo (`fixtures/graphify-graph.json`),
+not synthetic data, for the same reason every prior real-capture fixture exists — synthetic data
+would not have caught the file-identity assumption being wrong.
+
+```
+✓ packages/shared/src/codegraph.test.ts     (12)
+✓ packages/panel/src/codeMapLayout.test.ts  (16)
+✓ packages/sidecar/src/codegraph.test.ts    (13)
 ```
 
 ## Known gaps
