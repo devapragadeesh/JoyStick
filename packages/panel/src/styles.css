@@ -1,0 +1,156 @@
+:root {
+  --bg: #0e0f13;
+  --fg: #d6d8de;
+  --dim: #71757f;
+  --line: #22242c;
+  --tool: #6ea8fe;
+  --agent: #c792ea;
+  --fail: #ff6b6b;
+  --session: #7ee0a8;
+  --task: #ffc857;
+  --turn: #d6d8de;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  font-size: 14px;
+  margin: 0;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+}
+.status-live {
+  color: var(--session);
+  border-color: var(--session);
+}
+.status-offline {
+  color: var(--fail);
+  border-color: var(--fail);
+}
+.status-connecting {
+  color: var(--dim);
+}
+
+.count,
+.empty {
+  color: var(--dim);
+}
+
+select {
+  margin-left: auto;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font: inherit;
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.event {
+  border-bottom: 1px solid var(--line);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 68px 44px 150px auto 1fr;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 5px 4px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  background: #16181f;
+}
+
+.time,
+.seq {
+  color: var(--dim);
+}
+.seq {
+  text-align: right;
+}
+
+.name {
+  color: var(--tool);
+}
+.event-agent .name {
+  color: var(--agent);
+}
+.event-fail .name {
+  color: var(--fail);
+}
+.event-session .name {
+  color: var(--session);
+}
+.event-task .name {
+  color: var(--task);
+}
+.event-turn .name {
+  color: var(--turn);
+}
+
+.agent {
+  color: var(--agent);
+  font-size: 11px;
+  border: 1px solid var(--agent);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raw {
+  margin: 0;
+  padding: 8px 12px;
+  background: #16181f;
+  color: var(--dim);
+  overflow-x: auto;
+  max-height: 400px;
+  font-size: 12px;
+}

@@ -1,0 +1,20 @@
+{
+  "name": "joystick",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "pnpm --filter @joystick/sidecar --filter @joystick/panel --parallel dev",
+    "build": "pnpm --filter @joystick/shared build && pnpm --filter @joystick/panel build && pnpm --filter @joystick/sidecar build",
+    "start": "pnpm --filter @joystick/sidecar start",
+    "test": "vitest run",
+    "replay": "tsx scripts/replay.ts",
+    "bench": "tsx scripts/bench.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

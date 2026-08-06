@@ -1,0 +1,140 @@
+import Fastify, { type FastifyInstance } from "fastify";
+import fastifyStatic from "@fastify/static";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { classify, summarize, type Envelope } from "@joystick/shared";
+import { config } from "./config.js";
+import { Store } from "./db.js";
+import { Broker } from "./sse.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+export interface BuildOptions {
+  store?: Store;
+  logger?: boolean;
+}
+
+export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
+  store: Store;
+  broker: Broker;
+} {
+  const store = opts.store ?? new Store();
+  const broker = new Broker();
+
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    // Logging is off by default: hook payloads arrive from a local shim, not a
+    // browser, and per-request logging would sit on the write path for nothing.
+    // With `logger` false, request logging is already disabled.
+    bodyLimit: config.maxPayloadBytes,
+  });
+
+  /**
+   * Ingest.
+   *
+   * Persist first, respond immediately, derive later. The response is not
+   * allowed to depend on anything that could be slow, because on the other end
+   * of this socket is a process attached to the agent loop.
+   */
+  app.post("/events", async (request, reply) => {
+    const receivedAtMs = Date.now();
+    const result = classify(request.body);
+
+    if (result.kind === "rejected") {
+      // Malformed input is dropped rather than stored. The shim ignores the
+      // status code either way; this exists so /events is honest under test.
+      return reply.code(400).send();
+    }
+
+    const payload = result.envelope;
+    const p = payload as Record<string, unknown>;
+
+    const row = store.insertEvent({
+      session_id: payload.session_id,
+      hook_event_name: payload.hook_event_name,
+      tool_name: asString(p.tool_name),
+      tool_use_id: asString(p.tool_use_id),
+      agent_id: asString(p.agent_id),
+      agent_type: asString(p.agent_type),
+      prompt_id: asString(p.prompt_id),
+      summary: summarize(payload),
+      known: result.kind === "known",
+      raw: JSON.stringify(request.body),
+      received_at_ms: receivedAtMs,
+    });
+
+    trackSession(store, payload, receivedAtMs);
+
+    reply.code(204).send();
+
+    // Everything past the response is off the critical path.
+    setImmediate(() => broker.publish(row));
+  });
+
+  app.get("/health", async () => ({
+    ok: true,
+    port: config.port,
+    db: config.dbPath,
+    subscribers: broker.size,
+    pid: process.pid,
+  }));
+
+  app.get("/stream", (request, reply) => {
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    reply.raw.write(": connected\n\n");
+    broker.subscribe(reply);
+  });
+
+  app.get("/api/events", async (request) => {
+    const q = request.query as { limit?: string; session_id?: string };
+    const limit = Math.min(Number(q.limit) || 200, 2000);
+    return store.recentEvents(limit, q.session_id);
+  });
+
+  app.get("/api/sessions", async () => store.sessions());
+
+  // The built panel, when present. In development the panel runs under Vite on
+  // its own port and proxies here instead.
+  const panelDist = join(here, "..", "..", "panel", "dist");
+  if (existsSync(panelDist)) {
+    app.register(fastifyStatic, { root: panelDist });
+  }
+
+  const heartbeat = setInterval(() => broker.heartbeat(), 25_000);
+  heartbeat.unref();
+  app.addHook("onClose", async () => {
+    clearInterval(heartbeat);
+    broker.closeAll();
+  });
+
+  return Object.assign(app, { store, broker });
+}
+
+function asString(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function trackSession(store: Store, payload: Envelope, receivedAtMs: number): void {
+  const p = payload as Record<string, unknown>;
+  const at = new Date(receivedAtMs).toISOString();
+
+  // Any event can be the first one we see for a session — the sidecar may have
+  // started mid-session, or SessionStart may simply have lost the race.
+  store.upsertSession({
+    session_id: payload.session_id,
+    cwd: asString(p.cwd),
+    transcript_path: asString(p.transcript_path),
+    source: payload.hook_event_name === "SessionStart" ? asString(p.source) : null,
+    started_at: at,
+  });
+
+  if (payload.hook_event_name === "SessionEnd") {
+    store.endSession(payload.session_id, asString(p.reason), at);
+  }
+}

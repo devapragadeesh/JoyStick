@@ -1,0 +1,12 @@
+{
+  "name": "joystick-dev",
+  "owner": { "name": "deva" },
+  "description": "Local development marketplace for the joystick session-timeline plugin.",
+  "plugins": [
+    {
+      "name": "joystick",
+      "source": "./",
+      "description": "Renders a Claude Code session as a readable, narrated timeline in a local browser panel."
+    }
+  ]
+}
