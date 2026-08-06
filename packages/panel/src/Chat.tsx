@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCodeGraph } from "./CodeMap.js";
 import { useSelection } from "./selection.js";
 import { useChat, useProviders } from "./useQa.js";
@@ -25,6 +25,15 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
   const [showSettings, setShowSettings] = useState(false);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  // Pin the view to the newest message as the conversation grows — the input
+  // row is a fixed footer (see .chat-messages' own scroll region in
+  // styles.css), so without this the latest message would sit below the
+  // fold rather than "just appearing" the way a chat is expected to.
+  useEffect(() => {
+    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
+  }, [messages.length]);
 
   const effectiveProviderId = providers.some((p) => p.id === providerId)
     ? providerId
@@ -88,7 +97,7 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
 
       {sessionId && (
         <>
-          <div className="chat-messages">
+          <div className="chat-messages" ref={messagesRef}>
             {messages.length === 0 && <p className="muted codemap-hint">Ask a question about this session's code.</p>}
             {messages.map((m) => (
               <div key={m.id} className={`chat-message chat-message-${m.role}`}>

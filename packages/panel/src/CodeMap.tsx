@@ -304,10 +304,15 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
           // 20 separate overlapping edges instead of rolling up to 1).
           api.collapseAllEdges({ groupEdgesOfSameTypeOnCollapse: true, edgeTypeInfo: "edgeType" });
         }
-        // A directory's contents can still land outside the current
-        // viewport (e.g. it's off to one side after an earlier pan), so
-        // re-fit to everything now visible.
-        cy.fit(undefined, 30);
+        // Deliberately no cy.fit() here: fitting to ALL currently-visible
+        // elements after every expand/collapse re-zooms/re-pans the WHOLE
+        // viewport around whatever just got bigger — which is what made
+        // unrelated, already-visible parts of the graph look "minimized"
+        // (confirmed live: expanding one directory shrank everything else).
+        // The child grid layout above already keeps new nodes near their
+        // parent's current position, so the user's own pan/zoom is left
+        // alone; if the parent itself is on screen, its children land on
+        // screen too.
         // Expand/collapse changes which node ids exist in cy without pulseNote
         // itself changing, so the React effect that normally applies the pulse
         // won't re-run on its own — reapply here so expanding the directory a

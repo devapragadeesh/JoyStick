@@ -35,15 +35,20 @@ export function buildPromptText(question: string, context: AssembledContext): st
     ].join("\n");
   });
 
-  return [
-    "You are answering a question about a codebase using only the context below.",
-    "Do not run commands or access anything outside this context — answer from it alone,",
-    "and say so explicitly if the context doesn't contain what's needed.",
-    "",
-    ...sections,
-    "",
-    `Question: ${question}`,
-  ].join("\n");
+  const intro =
+    sections.length > 0
+      ? [
+          "You are answering a question about a codebase using only the context below.",
+          "Do not run commands or access anything outside this context — answer from it alone,",
+          "and say so explicitly if the context doesn't contain what's needed.",
+        ]
+      : [
+          "You are answering a general question about a codebase. No specific files were",
+          "selected as context for this question, so answer from general knowledge and the",
+          "question itself. Do not run commands or access anything outside this prompt.",
+        ];
+
+  return [...intro, "", ...sections, "", `Question: ${question}`].join("\n");
 }
 
 export interface ProviderAnswer {
