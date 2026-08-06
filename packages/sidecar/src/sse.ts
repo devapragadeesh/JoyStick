@@ -21,10 +21,19 @@ export class Broker {
   }
 
   publish(event: EventRow): void {
+    this.publishNamed("joystick", event);
+  }
+
+  /**
+   * Same fan-out, any SSE event name. Phase 3 uses "blast-radius" to push a
+   * freshly computed note without the panel polling for it — existing
+   * subscribers that only listen for "joystick" simply never see it.
+   */
+  publishNamed(eventName: string, data: unknown): void {
     if (this.clients.size === 0) return;
     // JSON.stringify cannot emit a bare newline outside a string literal, so
     // the payload is always a single SSE data line.
-    const frame = `event: joystick\ndata: ${JSON.stringify(event)}\n\n`;
+    const frame = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const client of this.clients) {
       try {
         client.raw.write(frame);

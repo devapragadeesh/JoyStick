@@ -35,6 +35,20 @@ export interface ChatMessageRow {
   context_files: string; // JSON
   created_at: string;
 }
+export interface BlastRadiusRow {
+  id: number;
+  session_id: string;
+  tool_use_id: string;
+  file_path: string;
+  in_graph: 0 | 1;
+  truncated: 0 | 1;
+  max_depth: number;
+  affected: string; // JSON
+  summary: string;
+  test_note: string | null;
+  created_at_ms: number;
+}
+
 import { config } from "./config.js";
 
 /**
@@ -198,6 +212,26 @@ CREATE TABLE IF NOT EXISTS claude_cli_calls (
   called_at_ms  INTEGER NOT NULL
 );
 
+-- Phase 3: one row per blast-radius computation, keyed by the PostToolUse
+-- Edit/Write that triggered it. Stored (not recomputed on read) so the
+-- timeline's inline note and a late-joining panel both see the exact result
+-- that was live-pushed over SSE at the time, not a possibly-different one
+-- from a graph that re-extracted since.
+CREATE TABLE IF NOT EXISTS blast_radius_notes (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id      TEXT NOT NULL,
+  tool_use_id     TEXT NOT NULL,
+  file_path       TEXT NOT NULL,
+  in_graph        INTEGER NOT NULL,
+  truncated       INTEGER NOT NULL,
+  max_depth       INTEGER NOT NULL,
+  affected        TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  test_note       TEXT,
+  created_at_ms   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_blast_radius_session ON blast_radius_notes (session_id, tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id, id);
 CREATE INDEX IF NOT EXISTS idx_claude_cli_calls_time ON claude_cli_calls (called_at_ms);
 CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events (session_id, seq);
@@ -902,6 +936,47 @@ export class Store {
       .prepare("SELECT MIN(called_at_ms) AS t FROM claude_cli_calls WHERE called_at_ms > ?")
       .get(nowMs - windowMs) as { t: number | null };
     return row.t;
+  }
+
+  // ---- Phase 3: blast radius ----
+
+  insertBlastRadiusNote(input: {
+    sessionId: string;
+    toolUseId: string;
+    filePath: string;
+    inGraph: boolean;
+    truncated: boolean;
+    maxDepth: number;
+    affected: unknown;
+    summary: string;
+    testNote: string | null;
+    createdAtMs: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO blast_radius_notes
+           (session_id, tool_use_id, file_path, in_graph, truncated, max_depth, affected, summary, test_note, created_at_ms)
+         VALUES (@session_id, @tool_use_id, @file_path, @in_graph, @truncated, @max_depth, @affected, @summary, @test_note, @created_at_ms)`,
+      )
+      .run({
+        session_id: input.sessionId,
+        tool_use_id: input.toolUseId,
+        file_path: input.filePath,
+        in_graph: input.inGraph ? 1 : 0,
+        truncated: input.truncated ? 1 : 0,
+        max_depth: input.maxDepth,
+        affected: JSON.stringify(input.affected),
+        summary: input.summary,
+        test_note: input.testNote,
+        created_at_ms: input.createdAtMs,
+      });
+  }
+
+  /** All blast-radius notes for a session, keyed by tool_use_id for the timeline to merge in. */
+  blastRadiusNotes(sessionId: string): BlastRadiusRow[] {
+    return this.db
+      .prepare("SELECT * FROM blast_radius_notes WHERE session_id = ? ORDER BY id")
+      .all(sessionId) as BlastRadiusRow[];
   }
 
   close(): void {

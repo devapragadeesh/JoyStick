@@ -10,6 +10,7 @@ import { Broker } from "./sse.js";
 import { startTailer, tailOnce } from "./transcript.js";
 import { CodeGraphScheduler, isEditTrigger } from "./codegraph-triggers.js";
 import { registerQaRoutes } from "./qa-routes.js";
+import { reactToEdit } from "./blast-radius-service.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -96,6 +97,20 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
         codeGraph.notifyEdit(cwd);
       }
     }
+
+    // Phase 3: blast radius reacts to the same PostToolUse Edit/Write signal,
+    // independently of the graph re-extraction above — editing a file doesn't
+    // change who imports IT, so there's no need to wait for a fresh extract
+    // before computing "what depends on this." Runs over whatever graph is
+    // already cached; a stale-by-one-edit graph is an accepted, honest
+    // limitation (surfaced via `truncated`/`inGraph`), not silently hidden.
+    const toolUseId = asString(p.tool_use_id);
+    const editedPath = asString((p.tool_input as Record<string, unknown> | undefined)?.file_path);
+    if (isEditTrigger(payload.hook_event_name, asString(p.tool_name)) && toolUseId && editedPath) {
+      setImmediate(() =>
+        reactToEdit(store, broker, { sessionId: payload.session_id, toolUseId, absOrRelFilePath: editedPath }),
+      );
+    }
   });
 
   app.get("/health", async () => ({
@@ -136,6 +151,29 @@ export function buildServer(opts: BuildOptions = {}): FastifyInstance & {
 
   /** Force a tailer pass. Used by tests and by the panel on demand. */
   app.post("/api/tail", async () => ({ tailed: tailOnce(store) }));
+
+  /**
+   * Blast-radius notes for a session, keyed by tool_use_id — the timeline
+   * merges these into their originating Edit/Write step, same shape as what
+   * was live-pushed over /stream at computation time.
+   */
+  app.get("/api/blast-radius", async (request) => {
+    const q = request.query as { session_id?: string };
+    if (!q.session_id) return [];
+    return store.blastRadiusNotes(q.session_id).map((r) => ({
+      id: r.id,
+      sessionId: r.session_id,
+      toolUseId: r.tool_use_id,
+      filePath: r.file_path,
+      inGraph: r.in_graph === 1,
+      truncated: r.truncated === 1,
+      maxDepth: r.max_depth,
+      affected: JSON.parse(r.affected),
+      summary: r.summary,
+      testCoverageNote: r.test_note,
+      createdAtMs: r.created_at_ms,
+    }));
+  });
 
   /**
    * Raw liveness facts. Deliberately does not say whether a session ended —

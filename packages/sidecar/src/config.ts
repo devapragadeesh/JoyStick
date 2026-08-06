@@ -49,4 +49,7 @@ export const config = {
    */
   claudeCliRateLimitPerHour: num(process.env.JOYSTICK_CLAUDE_CLI_RATE_LIMIT, 20),
   claudeCliRateLimitWindowMs: 60 * 60 * 1000,
+
+  /** Phase 3: reverse-closure hop limit. See blastRadius.ts for why 3 is the default. */
+  blastRadiusMaxDepth: num(process.env.JOYSTICK_BLAST_RADIUS_DEPTH, 3),
 };

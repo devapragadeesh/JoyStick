@@ -4,6 +4,7 @@ import { SessionPicker } from "./SessionPicker.js";
 import { CodeMap } from "./CodeMap.js";
 import { Chat } from "./Chat.js";
 import { useSessions, useSessionTimeline } from "./useSession.js";
+import { useBlastRadius } from "./useBlastRadius.js";
 import { SelectionProvider } from "./selection.js";
 
 type Tab = "timeline" | "codemap" | "chat";
@@ -36,6 +37,9 @@ function AppInner() {
 
   const { turns, stepCount, loading } = useSessionTimeline(selected);
   const { scrollRef, pendingCount, atLive, jumpToLive } = useLiveScroll(stepCount);
+  // One subscription, two presentations (3.2/3.3): the same blast-radius
+  // notes drive both the timeline's inline note and the graph's pulse.
+  const blastRadius = useBlastRadius(selected);
 
   return (
     <div className="app">
@@ -68,12 +72,12 @@ function AppInner() {
           <main ref={scrollRef}>
             {loading && <p className="muted">Loading…</p>}
             {!loading && selected === null && <p className="empty">Select a session.</p>}
-            {!loading && selected !== null && <Timeline turns={turns} />}
+            {!loading && selected !== null && <Timeline turns={turns} blastRadius={blastRadius} />}
           </main>
         </div>
       )}
 
-      {tab === "codemap" && <CodeMap />}
+      {tab === "codemap" && <CodeMap blastRadius={blastRadius} />}
 
       {tab === "chat" && <Chat sessionId={selected} />}
 

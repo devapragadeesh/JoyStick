@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { TimelineStep } from "@joystick/shared";
+import type { BlastRadiusNote, TimelineStep } from "@joystick/shared";
 import { summarizeStep } from "./summarize.js";
 
 /**
@@ -47,10 +47,12 @@ export function Step({
   step,
   children,
   depth = 0,
+  blastRadius,
 }: {
   step: TimelineStep;
   children?: TimelineStep[];
   depth?: number;
+  blastRadius?: BlastRadiusNote;
 }) {
   const isError = step.status === "error";
   const exploratory = EXPLORATORY.has(step.toolName ?? "");
@@ -83,6 +85,8 @@ export function Step({
           </span>
         )}
       </button>
+
+      {blastRadius && <BlastRadius note={blastRadius} />}
 
       {open && hasDetail && (
         <div className="step-body">
@@ -150,6 +154,23 @@ function Intent({ step }: { step: TimelineStep }) {
       <span className="intent-block-label">Claude's reasoning</span>
       <p className={`intent intent-${step.intentSource}`}>{step.intent}</p>
     </div>
+  );
+}
+
+/**
+ * Phase 3's inline note: always visible (not gated behind the expand toggle,
+ * unlike intent/diff/output) since "what did this ripple into" is the point
+ * of showing it at all — burying it behind a click would defeat that. Never
+ * claims completeness it doesn't have: `truncated`/`!inGraph` are stated
+ * plainly rather than a silently-shorter list.
+ */
+function BlastRadius({ note }: { note: BlastRadiusNote }) {
+  return (
+    <p className="blast-radius-note">
+      <span className="blast-radius-label">ripple</span>
+      {note.summary}
+      {note.testCoverageNote && <span className="muted"> · {note.testCoverageNote}</span>}
+    </p>
   );
 }
 

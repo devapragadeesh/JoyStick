@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { TimelineStep, TurnGroup } from "@joystick/shared";
+import type { BlastRadiusNote, TimelineStep, TurnGroup } from "@joystick/shared";
 import { ExploredSummary, isExploratory, Step } from "./Step.js";
 
 /**
@@ -9,7 +9,13 @@ import { ExploredSummary, isExploratory, Step } from "./Step.js";
  * Phase 0 confirmed a killed session simply stops emitting, so an open turn is
  * rendered as in progress rather than withheld.
  */
-export function Timeline({ turns }: { turns: TurnGroup[] }) {
+export function Timeline({
+  turns,
+  blastRadius,
+}: {
+  turns: TurnGroup[];
+  blastRadius?: Map<string, BlastRadiusNote>;
+}) {
   if (turns.length === 0) {
     return <p className="empty">No steps yet for this session.</p>;
   }
@@ -20,13 +26,21 @@ export function Timeline({ turns }: { turns: TurnGroup[] }) {
   return (
     <div className="timeline">
       {ordered.map((turn, i) => (
-        <Turn key={turn.turnId} turn={turn} defaultOpen={i === 0} />
+        <Turn key={turn.turnId} turn={turn} defaultOpen={i === 0} blastRadius={blastRadius} />
       ))}
     </div>
   );
 }
 
-function Turn({ turn, defaultOpen }: { turn: TurnGroup; defaultOpen: boolean }) {
+function Turn({
+  turn,
+  defaultOpen,
+  blastRadius,
+}: {
+  turn: TurnGroup;
+  defaultOpen: boolean;
+  blastRadius?: Map<string, BlastRadiusNote>;
+}) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -43,7 +57,7 @@ function Turn({ turn, defaultOpen }: { turn: TurnGroup; defaultOpen: boolean }) 
 
       {open && (
         <>
-          <ol className="steps">{renderSteps(turn.rootSteps, turn)}</ol>
+          <ol className="steps">{renderSteps(turn.rootSteps, turn, blastRadius)}</ol>
 
           {turn.unattributedSteps.length > 0 && (
             <div className="unattributed">
@@ -56,7 +70,7 @@ function Turn({ turn, defaultOpen }: { turn: TurnGroup; defaultOpen: boolean }) 
               </h3>
               <ol className="steps">
                 {turn.unattributedSteps.map((s) => (
-                  <Step key={s.id} step={s} depth={1} />
+                  <Step key={s.id} step={s} depth={1} blastRadius={blastRadius?.get(s.id)} />
                 ))}
               </ol>
             </div>
@@ -72,13 +86,13 @@ function Turn({ turn, defaultOpen }: { turn: TurnGroup; defaultOpen: boolean }) 
  * and expandable, never dropped — the point is to stop them burying the steps
  * that changed something.
  */
-function renderSteps(steps: TimelineStep[], turn: TurnGroup) {
+function renderSteps(steps: TimelineStep[], turn: TurnGroup, blastRadius?: Map<string, BlastRadiusNote>) {
   const out: React.ReactNode[] = [];
   let run: TimelineStep[] = [];
 
   const flush = () => {
     if (run.length === 0) return;
-    if (run.length === 1) out.push(<Step key={run[0].id} step={run[0]} />);
+    if (run.length === 1) out.push(<Step key={run[0].id} step={run[0]} blastRadius={blastRadius?.get(run[0].id)} />);
     else out.push(<ExploredSummary key={`explored:${run[0].id}`} steps={run} />);
     run = [];
   };
@@ -90,7 +104,7 @@ function renderSteps(steps: TimelineStep[], turn: TurnGroup) {
       continue;
     }
     flush();
-    out.push(<Step key={step.id} step={step} children={children} />);
+    out.push(<Step key={step.id} step={step} children={children} blastRadius={blastRadius?.get(step.id)} />);
   }
   flush();
 

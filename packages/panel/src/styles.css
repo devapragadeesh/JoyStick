@@ -736,3 +736,33 @@ main {
   font-weight: 600;
   cursor: pointer;
 }
+
+/* ---- Phase 3: blast radius ---- */
+
+.blast-radius-note {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--red);
+  font-size: 12px;
+  color: var(--fg);
+  background: rgb(255 107 107 / 0.08);
+}
+
+.blast-radius-label {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--red);
+  margin-right: 6px;
+}
+
+.codemap-blast-banner {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--fg);
+  background: rgb(255 107 107 / 0.1);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}

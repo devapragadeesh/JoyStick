@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildTimeline, truncateForContext, type AssembledContext, type FileContext } from "@joystick/shared";
 import type { Store } from "./db.js";
+import { toRepoRelative } from "./paths.js";
 
 /**
  * Provider-agnostic context assembly (B.3).
@@ -39,11 +40,8 @@ export async function assembleContext(store: Store, sessionId: string, filePaths
   // (and the filePaths this function is called with) uses repo-relative
   // paths throughout. Without normalizing, no step ever matches any file.
   const repoRoot = meta?.repo_root;
-  const relativeTarget = (target: string | undefined): string | undefined => {
-    if (!target) return undefined;
-    if (repoRoot && target.startsWith(`${repoRoot}/`)) return target.slice(repoRoot.length + 1);
-    return target;
-  };
+  const relativeTarget = (target: string | undefined): string | undefined =>
+    target === undefined ? undefined : repoRoot ? toRepoRelative(repoRoot, target) : target;
 
   const files: FileContext[] = [];
 

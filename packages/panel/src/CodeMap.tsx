@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { type Core } from "cytoscape";
 import expandCollapse, { type ExpandCollapseApi } from "cytoscape-expand-collapse";
-import type { CodeGraph, CodeGraphMeta } from "@joystick/shared";
-import { nodeDetail, toCompoundElements, type NodeDetail } from "./codeMapLayout.js";
+import type { BlastRadiusNote, CodeGraph, CodeGraphMeta } from "@joystick/shared";
+import { dirNodeId, dirOf, nodeDetail, toCompoundElements, type NodeDetail } from "./codeMapLayout.js";
 import { useSelection } from "./selection.js";
 
 cytoscape.use(expandCollapse);
@@ -110,9 +110,96 @@ const STYLE: cytoscape.StylesheetJsonBlock[] = [
     selector: ".picked",
     style: { "border-width": 3, "border-color": "#ffc857" },
   },
+  // Phase 3: blast-radius pulse. Deliberately a different color family (red/
+  // orange) from both the green neighbor-highlight and the amber multi-select
+  // outline, so "this is what just rippled from an edit" never reads as "this
+  // is what you selected."
+  {
+    selector: ".blast-changed",
+    style: {
+      "background-color": "#ff6b6b",
+      "border-width": 3,
+      "border-color": "#ff6b6b",
+      "z-index": 20,
+    },
+  },
+  {
+    selector: ".blast-affected",
+    style: {
+      "background-color": "#ffa94d",
+      "border-width": 2,
+      "border-color": "#ffa94d",
+      "line-color": "#ffa94d",
+      "target-arrow-color": "#ffa94d",
+      opacity: 1,
+      "z-index": 15,
+    },
+  },
+  {
+    selector: ".blast-changed-dir, .blast-affected-dir",
+    style: {
+      "border-width": 3,
+      "border-color": "#ff6b6b",
+      color: "#ffa94d",
+      "font-weight": "bold",
+    },
+  },
 ];
 
-export function CodeMap() {
+/**
+ * Apply (or clear) a blast-radius pulse to whatever's currently live in
+ * cytoscape. A plain function, not a hook, deliberately: it has to run both
+ * from a React effect (when the pulse itself changes) AND from the directory
+ * tap handler right after an expand/collapse — expanding a directory reveals
+ * node ids that didn't exist in cy a moment ago, and nothing about a pulse
+ * "changing" would otherwise tell React to re-run this. A directory node
+ * whose children are collapsed away (so an affected file's own node doesn't
+ * exist in cy right now) gets a badge on the directory itself instead — the
+ * point of 3.3 is that a ripple is never silently invisible just because the
+ * user hasn't expanded the right folder, and once they do, the actual
+ * affected files inside light up too, not just the badge that sent them there.
+ */
+function applyBlastPulse(cy: Core, pulseNote: BlastRadiusNote | null): void {
+  cy.nodes().forEach((n) => {
+    if (n.data("type") === "dir" && (n.hasClass("blast-changed-dir") || n.hasClass("blast-affected-dir"))) {
+      n.data("label", `${n.data("dirPath")}/`);
+    }
+  });
+  cy.elements().removeClass("blast-changed blast-affected blast-changed-dir blast-affected-dir");
+
+  if (!pulseNote || !pulseNote.inGraph) return;
+
+  const changedNode = cy.getElementById(pulseNote.filePath);
+  if (changedNode.nonempty()) {
+    changedNode.addClass("blast-changed");
+  } else {
+    const dirNode = cy.getElementById(dirNodeId(dirOf(pulseNote.filePath)));
+    if (dirNode.nonempty()) {
+      dirNode.addClass("blast-changed-dir");
+      dirNode.data("label", `${dirNode.data("dirPath")}/ · changed file inside`);
+    }
+  }
+
+  const dirBadgeCounts = new Map<string, number>();
+  for (const affected of pulseNote.affected) {
+    const n = cy.getElementById(affected.filePath);
+    if (n.nonempty()) {
+      n.addClass("blast-affected");
+    } else {
+      const dirId = dirNodeId(dirOf(affected.filePath));
+      dirBadgeCounts.set(dirId, (dirBadgeCounts.get(dirId) ?? 0) + 1);
+    }
+  }
+  for (const [dirId, count] of dirBadgeCounts) {
+    const dirNode = cy.getElementById(dirId);
+    if (dirNode.nonempty()) {
+      dirNode.addClass("blast-affected-dir");
+      dirNode.data("label", `${dirNode.data("dirPath")}/ · ${count} affected`);
+    }
+  }
+}
+
+export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadiusNote> }) {
   const { graph, meta, loading } = useCodeGraph();
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const { selected, toggle, replace, add } = useSelection();
@@ -221,6 +308,11 @@ export function CodeMap() {
         // viewport (e.g. it's off to one side after an earlier pan), so
         // re-fit to everything now visible.
         cy.fit(undefined, 30);
+        // Expand/collapse changes which node ids exist in cy without pulseNote
+        // itself changing, so the React effect that normally applies the pulse
+        // won't re-run on its own — reapply here so expanding the directory a
+        // badge pointed at actually reveals which files inside it lit up.
+        applyBlastPulse(cy, pulseNoteRef.current);
         setDetail(nodeDetail(g, id, true, node.data("dirPath")));
         return;
       }
@@ -318,6 +410,49 @@ export function CodeMap() {
     });
   }, [detail]);
 
+  // Track the newest blast-radius note and pulse it for a few seconds, then
+  // clear — "reacted to a live edit" has to read as transient, not as a
+  // second permanent selection state sitting on top of the graph forever.
+  const [pulseNote, setPulseNote] = useState<BlastRadiusNote | null>(null);
+  const lastPulsedKey = useRef<string | null>(null);
+  // Read by the directory tap handler below, which is mounted once and would
+  // otherwise close over pulseNote's initial (null) value forever.
+  const pulseNoteRef = useRef<BlastRadiusNote | null>(null);
+  pulseNoteRef.current = pulseNote;
+
+  useEffect(() => {
+    if (!blastRadius || blastRadius.size === 0) return;
+    let newest: BlastRadiusNote | null = null;
+    for (const note of blastRadius.values()) {
+      if (!newest || note.createdAtMs > newest.createdAtMs) newest = note;
+    }
+    if (!newest) return;
+    const key = `${newest.toolUseId}:${newest.createdAtMs}`;
+    if (key === lastPulsedKey.current) return;
+    lastPulsedKey.current = key;
+    setPulseNote(newest);
+    const t = setTimeout(() => setPulseNote(null), 5000);
+    return () => clearTimeout(t);
+  }, [blastRadius]);
+
+  // Apply the pulse to whatever's currently live in cytoscape. A directory
+  // node whose children are collapsed away (so an affected file's own node
+  // doesn't exist in cy right now) gets a badge on the directory itself
+  // instead — the point of 3.3 is that a ripple is never silently invisible
+  // just because the user hasn't expanded the right folder.
+  // Depends on `cy`/`elements`, not just `pulseNote`: the "load elements"
+  // effect above rebuilds the whole graph (cy.elements().remove(); cy.add(...))
+  // whenever a fresh poll resolves, which silently wipes any classes this
+  // effect applied earlier — confirmed live: switching to this tab reliably
+  // lost the pulse because useCodeGraph's first poll after remount always
+  // rebuilds once, racing ahead of (and clobbering) this effect's own run.
+  // Re-running here whenever the graph reloads reapplies the still-active
+  // pulse instead of leaving it silently gone.
+  useEffect(() => {
+    if (!cy) return;
+    applyBlastPulse(cy, pulseNote);
+  }, [pulseNote, cy, elements]);
+
   return (
     <div className="codemap">
       <div className="codemap-toolbar">
@@ -336,6 +471,13 @@ export function CodeMap() {
       {!loading && !graph && (
         <p className="muted codemap-status">
           No import graph yet. It builds automatically in the background on session start.
+        </p>
+      )}
+
+      {pulseNote && (
+        <p className="codemap-blast-banner">
+          {pulseNote.summary}
+          {pulseNote.testCoverageNote && <span className="muted"> · {pulseNote.testCoverageNote}</span>}
         </p>
       )}
 
