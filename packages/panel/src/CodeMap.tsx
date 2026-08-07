@@ -304,7 +304,15 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
       animate: !reducedMotion,
       animationDuration: 250,
       undoable: false,
-      cueEnabled: true,
+      // The extension's own +/- cue button (top-left corner of an expanded
+      // node) has its own internal click handling, separate from our tap
+      // handler below — a click on it can fire both, racing two
+      // expand/collapse calls against each other. Reported live: clicking
+      // the cue pushed the box down instead of closing it. Our tap handler
+      // (node body, and the label via text-events above) already toggles
+      // reliably on its own, so the redundant, race-prone trigger is off
+      // rather than something to reconcile.
+      cueEnabled: false,
       groupEdgesOfSameTypeOnCollapse: true,
       edgeTypeInfo: "edgeType",
     });
@@ -426,7 +434,7 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
     api.collapseAll({
       animate: false,
       undoable: false,
-      cueEnabled: true,
+      cueEnabled: false,
       fisheye: false,
       groupEdgesOfSameTypeOnCollapse: true,
       edgeTypeInfo: "edgeType",
