@@ -1,11 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { type Core } from "cytoscape";
 import expandCollapse, { type ExpandCollapseApi } from "cytoscape-expand-collapse";
+import dagre from "cytoscape-dagre";
 import type { BlastRadiusNote, CodeGraph, CodeGraphMeta } from "@joystick/shared";
-import { dirNodeId, dirOf, nodeDetail, toCompoundElements, type NodeDetail } from "./codeMapLayout.js";
+import { dirNodeId, dirOf, filesInDir, nodeDetail, toCompoundElements, type NodeDetail } from "./codeMapLayout.js";
 import { useSelection } from "./selection.js";
 
 cytoscape.use(expandCollapse);
+cytoscape.use(dagre);
+
+// Top-down rank layout instead of cose's force-directed scatter — reads as
+// a tree/hierarchy the way a directory+import structure actually is,
+// rather than an unstructured cloud. Only used for the one-time initial
+// layout and the initial collapse-everything pass; the per-directory
+// children reveal on expand (below) stays its own small bounded grid,
+// untouched — that's the mechanism Part 3 already fixed to never re-fit or
+// reposition the rest of the graph.
+const TREE_LAYOUT = {
+  name: "dagre",
+  rankDir: "TB",
+  // Directory labels sit above their node and can be wider than the node
+  // itself — nodeSep wide enough to keep adjacent labels from colliding at
+  // the same rank, confirmed live (default spacing overlapped labels for
+  // several same-rank top-level directories).
+  nodeSep: 110,
+  rankSep: 90,
+  animate: false,
+  fit: true,
+  padding: 30,
+} as cytoscape.LayoutOptions;
 
 /**
  * The static architecture map: file-level import edges only.
@@ -106,6 +129,12 @@ const STYLE: cytoscape.StylesheetJsonBlock[] = [
       "target-arrow-shape": "triangle",
       "curve-style": "bezier",
       opacity: 0.7,
+      // Dashed rather than solid so the flow animation below has a visible
+      // pattern to move — a solid line with an animated offset has nothing
+      // to show motion with.
+      "line-style": "dashed",
+      "line-dash-pattern": [6, 4],
+      "line-dash-offset": 0,
     },
   },
   { selector: ".faded", style: { opacity: 0.1 } },
@@ -286,8 +315,9 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
           api.expandRecursively(node);
           // With layoutBy:null, revealed children pop back to wherever the
           // one-time full-graph layout (at mount) put them — which, for a
-          // ~60-node cose layout, can be thousands of px from their own
-          // parent (confirmed live). Re-laying out just this node's
+          // ~60-node graph, can still be far from their own parent even with
+          // a hierarchical (dagre) layout, since collapsed children were
+          // never part of that layout pass to begin with. Re-laying out just this node's
           // children in a small grid pinned to the parent's current
           // position keeps the directory's contents next to it instead of
           // scattered across the map.
@@ -367,7 +397,7 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
     if (!cy || !api || elements.length === 0) return;
     cy.elements().remove();
     cy.add(elements);
-    cy.layout({ name: "cose", animate: false, padding: 30 } as cytoscape.LayoutOptions).run();
+    cy.layout(TREE_LAYOUT).run();
     // A per-call options object passed to collapseAll REPLACES the whole
     // config for that call rather than merging with the constructor's
     // defaults above — so every option the extension needs to function
@@ -383,13 +413,35 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
       cueEnabled: true,
       groupEdgesOfSameTypeOnCollapse: true,
       edgeTypeInfo: "edgeType",
-      layoutBy: { name: "cose", animate: false, randomize: false, fit: true, padding: 30 } as cytoscape.LayoutOptions,
+      layoutBy: TREE_LAYOUT,
     });
     // See the tap handler below: groupEdgesOfSameTypeOnCollapse only takes
     // effect through this separate call, never automatically from collapse.
     api.collapseAllEdges({ groupEdgesOfSameTypeOnCollapse: true, edgeTypeInfo: "edgeType" });
     setDetail(null);
   }, [cy, elements]);
+
+  // "Water flow" cue: continuously advance the dashed edges' offset so
+  // motion reads as moving from source to target — the same direction the
+  // arrowhead already points. A plain rAF loop rather than a cytoscape
+  // animation: this has to run indefinitely and touch every edge each
+  // frame, which is what style updates in a loop are for; cy's own
+  // animate() API is built for one-shot/looping transitions on a known end
+  // state, not an unbounded value. Skipped entirely under reduced motion,
+  // not just shortened — a static dashed line still reads fine without it.
+  useEffect(() => {
+    if (!cy) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let raf: number;
+    let offset = 0;
+    const tick = () => {
+      offset -= 0.5;
+      cy.edges().style("line-dash-offset", offset);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [cy]);
 
   // Multi-select highlight (B.1's "visible highlight state distinct from
   // neighbor-highlight") is layered independently of any node's own
@@ -496,7 +548,7 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
 
       <div ref={containerRef} className="codemap-canvas" />
 
-      {detail && <NodeDetailPanel detail={detail} />}
+      {detail && <NodeDetailPanel detail={detail} graph={graph} selected={selected} onAdd={add} />}
 
       {!detail && graph && (
         <p className="muted codemap-hint">
@@ -512,7 +564,20 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
  * (Step.tsx's `.step-body`) rather than inventing a new one: a bordered box
  * revealing the full path and metadata a collapsed/truncated label omits.
  */
-function NodeDetailPanel({ detail }: { detail: NodeDetail }) {
+function NodeDetailPanel({
+  detail,
+  graph,
+  selected,
+  onAdd,
+}: {
+  detail: NodeDetail;
+  graph: CodeGraph | null;
+  selected: string[];
+  onAdd: (filePath: string) => void;
+}) {
+  const dirFiles = detail.kind === "dir" && detail.dirPath && graph ? filesInDir(graph, detail.dirPath) : [];
+  const unselectedCount = dirFiles.filter((f) => !selected.includes(f)).length;
+
   return (
     <div className="codemap-detail">
       {detail.kind === "file" ? (
@@ -530,6 +595,17 @@ function NodeDetailPanel({ detail }: { detail: NodeDetail }) {
       <p className="muted codemap-detail-counts">
         imports {detail.importsCount} · imported by {detail.importedByCount}
       </p>
+      {detail.kind === "dir" && dirFiles.length > 0 && (
+        <button
+          className="codemap-add-context"
+          disabled={unselectedCount === 0}
+          onClick={() => dirFiles.forEach(onAdd)}
+        >
+          {unselectedCount === 0
+            ? "all files in this folder are in Ask context"
+            : `add ${unselectedCount} file${unselectedCount === 1 ? "" : "s"} to Ask context`}
+        </button>
+      )}
     </div>
   );
 }

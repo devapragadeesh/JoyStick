@@ -45,7 +45,12 @@ export function buildPromptText(question: string, context: AssembledContext): st
       : [
           "You are answering a general question about a codebase. No specific files were",
           "selected as context for this question, so answer from general knowledge and the",
-          "question itself. Do not run commands or access anything outside this prompt.",
+          "question itself where that's genuinely possible.",
+          "If the question depends on details of this specific codebase that you cannot know",
+          "without seeing its files (e.g. \"what does this folder do\"), say so plainly and",
+          "suggest the user select the relevant file(s) or folder for context — do not invent",
+          "plausible-sounding specifics about a codebase you have not been shown.",
+          "Do not run commands or access anything outside this prompt.",
         ];
 
   return [...intro, "", ...sections, "", `Question: ${question}`].join("\n");
@@ -76,7 +81,18 @@ export async function askOllama(config: OllamaConfig, promptText: string, timeou
     const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.model, prompt: promptText, stream: false }),
+      // Ollama's default context window (historically 2048 tokens) applies
+      // regardless of what the model itself supports, and it truncates
+      // rather than erroring — indistinguishable from "the model just
+      // doesn't have the context." A single capped-at-8000-char file from
+      // assembleContext already exceeds the default, so this has to be set
+      // explicitly for multi-file context to actually reach the model.
+      body: JSON.stringify({
+        model: config.model,
+        prompt: promptText,
+        stream: false,
+        options: { num_ctx: 8192 },
+      }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`ollama responded ${res.status}: ${await res.text()}`);

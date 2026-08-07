@@ -291,6 +291,28 @@ h3 {
   color: var(--fg-dim);
 }
 
+.codemap-add-context {
+  margin-top: var(--space-2);
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease);
+}
+.codemap-add-context:hover:not(:disabled) {
+  background: rgb(110 168 254 / 0.1);
+}
+.codemap-add-context:disabled {
+  border-color: var(--line);
+  color: var(--fg-dim);
+  cursor: default;
+}
+
 /* ---- picker ---- */
 
 .picker {

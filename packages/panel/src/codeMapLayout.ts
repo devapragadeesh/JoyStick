@@ -33,6 +33,13 @@ export function dirNodeId(dirPath: string): string {
   return `dir:${dirPath}`;
 }
 
+/** Direct file children of a directory node — same one-level relationship
+ * the compound graph itself uses (see toCompoundElements), not a recursive
+ * filesystem walk. */
+export function filesInDir(graph: CodeGraph, dirPath: string): string[] {
+  return graph.nodes.filter((n) => dirOf(n.filePath) === dirPath).map((n) => n.filePath);
+}
+
 export function toCompoundElements(graph: CodeGraph): ElementDefinition[] {
   const dirFileCounts = new Map<string, number>();
   for (const n of graph.nodes) {
@@ -79,14 +86,14 @@ export interface NodeDetail {
 /** Detail shown in the on-select panel. Counts are direct (one-hop) only. */
 export function nodeDetail(graph: CodeGraph, nodeId: string, isDir: boolean, dirPath?: string): NodeDetail {
   if (isDir && dirPath !== undefined) {
-    const filesInDir = new Set(graph.nodes.filter((n) => dirOf(n.filePath) === dirPath).map((n) => n.filePath));
-    const imports = graph.edges.filter((e) => filesInDir.has(e.from) && !filesInDir.has(e.to)).length;
-    const importedBy = graph.edges.filter((e) => filesInDir.has(e.to) && !filesInDir.has(e.from)).length;
+    const files = new Set(filesInDir(graph, dirPath));
+    const imports = graph.edges.filter((e) => files.has(e.from) && !files.has(e.to)).length;
+    const importedBy = graph.edges.filter((e) => files.has(e.to) && !files.has(e.from)).length;
     return {
       kind: "dir",
       label: `${dirPath}/`,
       dirPath,
-      fileCount: filesInDir.size,
+      fileCount: files.size,
       importsCount: imports,
       importedByCount: importedBy,
     };

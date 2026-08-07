@@ -136,7 +136,7 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
               ref={inputRef}
               value={text}
               onChange={(e) => handleTextChange(e.target.value)}
-              placeholder="Ask about the selected files… @ to mention one"
+              placeholder="Ask about the selected files… @ to mention one, or add a folder from the graph"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();

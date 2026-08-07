@@ -11,9 +11,11 @@
   "dependencies": {
     "@joystick/shared": "workspace:*",
     "cytoscape": "^3.30.4",
+    "cytoscape-dagre": "^4.0.0",
+    "cytoscape-expand-collapse": "^4.1.1",
+    "dagre": "^0.8.5",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "cytoscape-expand-collapse": "^4.1.1"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.8",
