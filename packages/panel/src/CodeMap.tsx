@@ -60,6 +60,11 @@ export function useCodeGraph(): { graph: CodeGraph | null; meta: CodeGraphMeta |
   return { graph, meta, loading };
 }
 
+// Node labels are file/directory paths, so they get the same monospace
+// treatment as any other path in the panel — set here rather than in CSS
+// since cytoscape renders labels to its own canvas, outside the DOM.
+const LABEL_FONT = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+
 const STYLE: cytoscape.StylesheetJsonBlock[] = [
   {
     selector: "node",
@@ -67,6 +72,7 @@ const STYLE: cytoscape.StylesheetJsonBlock[] = [
       "background-color": "#6ea8fe",
       label: "data(label)",
       color: "#d6d8de",
+      "font-family": LABEL_FONT,
       "font-size": 10,
       "text-valign": "bottom",
       "text-margin-y": 4,
@@ -85,6 +91,7 @@ const STYLE: cytoscape.StylesheetJsonBlock[] = [
       label: "data(label)",
       "text-valign": "top",
       "text-margin-y": -6,
+      "font-family": LABEL_FONT,
       "font-size": 11,
       color: "#c792ea",
       padding: "18px",
@@ -246,9 +253,10 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
     // position and its stored pre-collapse position, which is what actually
     // keeps everything else in place — the goal of "expand in place" to
     // begin with.
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     ecRef.current = cy.expandCollapse({
       layoutBy: null,
-      animate: true,
+      animate: !reducedMotion,
       animationDuration: 250,
       undoable: false,
       cueEnabled: true,
