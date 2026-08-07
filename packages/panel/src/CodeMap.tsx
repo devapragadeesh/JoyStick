@@ -118,6 +118,14 @@ const STYLE: cytoscape.StylesheetJsonBlock[] = [
       "font-size": 11,
       color: "#c792ea",
       padding: "18px",
+      // The label renders above the node's own box (text-valign/margin
+      // above), which by default isn't part of the node's hit area —
+      // confirmed live: clicking directly on a directory's name did
+      // nothing, requiring a second click actually on the box below it.
+      // text-events makes the rendered label itself dispatch the node's
+      // tap events too, so clicking the name — the most obvious thing to
+      // click — works on the first try.
+      "text-events": "yes",
     },
   },
   {
@@ -285,6 +293,14 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     ecRef.current = cy.expandCollapse({
       layoutBy: null,
+      // Defaults to true — the extension itself pans/zooms the viewport to
+      // keep the expanding/collapsing node comfortably framed, independent
+      // of anything we call. Confirmed live: with this left on, expanding
+      // one directory visibly shifted every OTHER, unrelated node's screen
+      // position (a camera pan, not a real repositioning) — exactly the
+      // "everything else pushes away" effect the no-cy.fit() fix above
+      // doesn't touch, since that only covers fit calls this code makes.
+      fisheye: false,
       animate: !reducedMotion,
       animationDuration: 250,
       undoable: false,
@@ -411,6 +427,7 @@ export function CodeMap({ blastRadius }: { blastRadius?: Map<string, BlastRadius
       animate: false,
       undoable: false,
       cueEnabled: true,
+      fisheye: false,
       groupEdgesOfSameTypeOnCollapse: true,
       edgeTypeInfo: "edgeType",
       layoutBy: TREE_LAYOUT,
