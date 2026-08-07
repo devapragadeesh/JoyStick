@@ -22,6 +22,9 @@ async function readFileSafely(absPath: string): Promise<string | null> {
   }
 }
 
+const CHANGE_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
+const RECENT_ACTIVITY_LIMIT = 15;
+
 export async function assembleContext(store: Store, sessionId: string, filePaths: string[]): Promise<AssembledContext> {
   const meta = store.codeGraphMeta();
   const graph = store.codeGraph();
@@ -77,5 +80,21 @@ export async function assembleContext(store: Store, sessionId: string, filePaths
     });
   }
 
-  return { files };
+  // Independent of `filePaths` — this is what makes "what changed recently
+  // and why" answerable even with nothing selected, since that question is
+  // about the session's history, not any one file's content. Most-recent
+  // first: allSteps is displayOrder-ascending, so reverse before capping.
+  const recentActivity = allSteps
+    .filter((s) => s.toolName && CHANGE_TOOLS.has(s.toolName))
+    .slice()
+    .reverse()
+    .slice(0, RECENT_ACTIVITY_LIMIT)
+    .map((s) => ({
+      filePath: relativeTarget(s.target) ?? null,
+      toolName: s.toolName ?? null,
+      intent: s.intent,
+      status: s.status,
+    }));
+
+  return { files, recentActivity };
 }

@@ -67,9 +67,25 @@ export interface SendResult {
   detail?: string;
 }
 
+/** The question the user just sent, shown immediately while the provider is
+ * still generating a reply — see useChat's `pending`. */
+export interface PendingMessage {
+  question: string;
+  contextFiles: string[];
+  providerLabel: string;
+}
+
 export function useChat(sessionId: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
+  // A chat reads as a chat when your own message appears the instant you
+  // send it — waiting for the full round trip (POST → provider call →
+  // refresh) before showing anything, which is what a plain `sending`
+  // boolean gives you, makes the input feel unresponsive even though the
+  // send itself went through immediately. This is optimistic local state,
+  // reconciled away the moment `refresh()` pulls the real (now two-message)
+  // history back from the server.
+  const [pending, setPending] = useState<PendingMessage | null>(null);
 
   const refresh = useCallback(async () => {
     if (!sessionId) {
@@ -86,9 +102,15 @@ export function useChat(sessionId: string | null) {
   }, [refresh]);
 
   const send = useCallback(
-    async (providerId: string, question: string, filePaths: string[]): Promise<SendResult> => {
+    async (
+      providerId: string,
+      providerLabel: string,
+      question: string,
+      filePaths: string[],
+    ): Promise<SendResult> => {
       if (!sessionId) return { ok: false, detail: "no session selected" };
       setSending(true);
+      setPending({ question, contextFiles: filePaths, providerLabel });
       try {
         const res = await fetch("/api/qa/chat", {
           method: "POST",
@@ -100,10 +122,11 @@ export function useChat(sessionId: string | null) {
         return { ok: res.ok, detail: body.detail };
       } finally {
         setSending(false);
+        setPending(null);
       }
     },
     [sessionId, refresh],
   );
 
-  return { messages, sending, send };
+  return { messages, sending, pending, send };
 }

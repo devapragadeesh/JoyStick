@@ -35,6 +35,20 @@ export function buildPromptText(question: string, context: AssembledContext): st
     ].join("\n");
   });
 
+  // Independent of which files (if any) are selected — same reasoning as
+  // the per-file Timeline lines above, just session-wide instead of scoped
+  // to one file. This is what lets "what changed recently and why" get a
+  // real answer instead of nothing, regardless of selection.
+  const recentSection =
+    context.recentActivity.length > 0
+      ? [
+          "### Recent activity in this session (most recent first)",
+          ...context.recentActivity.map(
+            (a) => `- ${a.toolName ?? "unknown tool"} ${a.filePath ?? "(no target)"} (${a.status}): ${a.intent ?? "no stated reason"}`,
+          ),
+        ]
+      : [];
+
   const intro =
     sections.length > 0
       ? [
@@ -49,11 +63,14 @@ export function buildPromptText(question: string, context: AssembledContext): st
           "If the question depends on details of this specific codebase that you cannot know",
           "without seeing its files (e.g. \"what does this folder do\"), say so plainly and",
           "suggest the user select the relevant file(s) or folder for context — do not invent",
-          "plausible-sounding specifics about a codebase you have not been shown.",
+          "plausible-sounding specifics about a codebase you have not been shown. A list of",
+          "recently changed files may be provided below even with no files selected — you may",
+          "use that for questions about recent changes, but it is not a substitute for file",
+          "content you haven't been shown.",
           "Do not run commands or access anything outside this prompt.",
         ];
 
-  return [...intro, "", ...sections, "", `Question: ${question}`].join("\n");
+  return [...intro, "", ...sections, "", ...recentSection, "", `Question: ${question}`].join("\n");
 }
 
 export interface ProviderAnswer {

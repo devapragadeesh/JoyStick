@@ -75,8 +75,24 @@ export interface FileContext {
   timelineNote: string;
 }
 
+/** One recent Edit/Write/NotebookEdit step, independent of file selection. */
+export interface RecentActivityEntry {
+  filePath: string | null;
+  toolName: string | null;
+  intent: string | null;
+  status: string;
+}
+
 export interface AssembledContext {
   files: FileContext[];
+  /**
+   * Most-recent-first, capped, session-wide — present regardless of which
+   * files (if any) are selected. Selection controls which files get full
+   * content; this is what makes "what changed recently and why" answerable
+   * even with nothing selected, since that question is about the session's
+   * history, not any one file's content.
+   */
+  recentActivity: RecentActivityEntry[];
 }
 
 export interface ChatMessage {

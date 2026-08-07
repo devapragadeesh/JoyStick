@@ -18,7 +18,7 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
   const { selected, remove, add } = useSelection();
   const { graph } = useCodeGraph();
   const { providers } = useProviders();
-  const { messages, sending, send } = useChat(sessionId);
+  const { messages, sending, pending, send } = useChat(sessionId);
 
   const [text, setText] = useState("");
   const [providerId, setProviderId] = useState<string>(() => localStorage.getItem(LAST_PROVIDER_KEY) ?? "");
@@ -33,7 +33,7 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
   // fold rather than "just appearing" the way a chat is expected to.
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
-  }, [messages.length]);
+  }, [messages.length, pending]);
 
   const effectiveProviderId = providers.some((p) => p.id === providerId)
     ? providerId
@@ -75,11 +75,14 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
     localStorage.setItem(LAST_PROVIDER_KEY, id);
   };
 
+  const effectiveProviderLabel =
+    providers.find((p) => p.id === effectiveProviderId)?.label ?? effectiveProviderId;
+
   const handleSend = async () => {
     const question = text.trim();
     if (!question || !effectiveProviderId) return;
     setText("");
-    await send(effectiveProviderId, question, selected);
+    await send(effectiveProviderId, effectiveProviderLabel, question, selected);
   };
 
   return (
@@ -110,54 +113,93 @@ export function Chat({ sessionId }: { sessionId: string | null }) {
                 )}
               </div>
             ))}
+            {pending && (
+              <>
+                <div className="chat-message chat-message-user">
+                  <p>{pending.question}</p>
+                  {pending.contextFiles.length > 0 && (
+                    <p className="muted chat-context-files">context: {pending.contextFiles.join(", ")}</p>
+                  )}
+                </div>
+                <div className="chat-message chat-message-assistant chat-message-thinking">
+                  <span className="chat-provider-tag">{pending.providerLabel}</span>
+                  <p className="chat-thinking-dots" aria-label="waiting for a reply">
+                    <span />
+                    <span />
+                    <span />
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
-          {selected.length > 0 && (
-            <div className="qa-chips">
+          <div className="chat-input-card">
+            <div className="chat-input-text">
               {selected.map((f) => (
                 <span key={f} className="codemap-chip">
                   {f.split("/").pop()}
                   <button onClick={() => remove(f)}>×</button>
                 </span>
               ))}
+              <textarea
+                ref={inputRef}
+                value={text}
+                onChange={(e) => handleTextChange(e.target.value)}
+                placeholder={selected.length > 0 ? "what does this do" : "Ask about this codebase… @ to mention a file"}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+              />
             </div>
-          )}
 
-          <div className="chat-input-row">
-            <select value={effectiveProviderId} onChange={(e) => handleSelectProvider(e.target.value)}>
-              {providers.length === 0 && <option value="">no providers configured</option>}
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label} ({p.kind})
-                </option>
-              ))}
-            </select>
-            <textarea
-              ref={inputRef}
-              value={text}
-              onChange={(e) => handleTextChange(e.target.value)}
-              placeholder="Ask about the selected files… @ to mention one, or add a folder from the graph"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-            />
-            <button onClick={handleSend} disabled={sending || !text.trim() || !effectiveProviderId}>
-              {sending ? "asking…" : "send"}
-            </button>
+            <div className="chat-input-toolbar">
+              <button
+                className="chat-input-plus"
+                title="mention a file"
+                onClick={() => {
+                  setText((t) => (t.endsWith("@") ? t : `${t}@`));
+                  setMentionQuery("");
+                  inputRef.current?.focus();
+                }}
+              >
+                +
+              </button>
+              <select
+                className="chat-input-provider"
+                value={effectiveProviderId}
+                onChange={(e) => handleSelectProvider(e.target.value)}
+              >
+                {providers.length === 0 && <option value="">No Model Selected</option>}
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label} ({p.kind})
+                  </option>
+                ))}
+              </select>
+              <button
+                className="chat-input-send"
+                onClick={handleSend}
+                disabled={sending || !text.trim() || !effectiveProviderId}
+                title="send"
+                aria-label="send"
+              >
+                {sending ? "…" : "→"}
+              </button>
+            </div>
+
+            {mentionMatches.length > 0 && (
+              <ul className="qa-mention-list">
+                {mentionMatches.map((n) => (
+                  <li key={n.id}>
+                    <button onClick={() => pickMention(n.filePath)}>{n.filePath}</button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-
-          {mentionMatches.length > 0 && (
-            <ul className="qa-mention-list">
-              {mentionMatches.map((n) => (
-                <li key={n.id}>
-                  <button onClick={() => pickMention(n.filePath)}>{n.filePath}</button>
-                </li>
-              ))}
-            </ul>
-          )}
         </>
       )}
     </div>
