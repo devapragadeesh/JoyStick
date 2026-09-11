@@ -1,6 +1,10 @@
-# joystick
+<p align="center">
+  <img src="joystick.png" alt="joystick" width="220">
+</p>
 
-**A local, live control panel for your Claude Code sessions.**
+<h1 align="center">joystick</h1>
+
+<p align="center"><strong>A local, live control panel for your Claude Code sessions.</strong></p>
 
 joystick turns a Claude Code session into a readable, narrated timeline and a live map of your
 codebase — running entirely on your machine, in a browser tab, with zero tokens spent watching you
